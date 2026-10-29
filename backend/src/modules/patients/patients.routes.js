@@ -51,8 +51,8 @@ router.get('/', requirePermission('patients.read'), asyncHandler(async (req, res
   const where = `WHERE TenantId = @tid AND IsArchived = @archived
     AND (@q IS NULL OR PatientNumber LIKE @q OR Phone LIKE @q OR FirstName LIKE @q OR LastName LIKE @q OR (FirstName + ' ' + ISNULL(LastName, '')) LIKE @q)`;
   const [rows, total] = await db.many(`
-    SELECT ${SELECT_COLS} FROM dbo.Patients ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.Patients ${where};`, params);
+    SELECT ${SELECT_COLS} FROM hms.Patients ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
+    SELECT COUNT(*) AS total FROM hms.Patients ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -63,7 +63,7 @@ router.post('/check-duplicates', requirePermission('patients.write'),
   asyncHandler(async (req, res) => {
     const b = req.body;
     const rows = await db.query(`
-      SELECT TOP 5 ${SELECT_COLS} FROM dbo.Patients
+      SELECT TOP 5 ${SELECT_COLS} FROM hms.Patients
       WHERE TenantId = @tid AND IsArchived = 0 AND (
         (@phone IS NOT NULL AND Phone = @phone) OR
         (@dob IS NOT NULL AND DateOfBirth = @dob AND FirstName = @first AND ISNULL(LastName, '') = ISNULL(@last, '')))`,
@@ -73,11 +73,11 @@ router.post('/check-duplicates', requirePermission('patients.write'),
 
 router.post('/', requirePermission('patients.write'), validate(patientSchema), asyncHandler(async (req, res) => {
   const created = await withTransaction(async (tx) => {
-    const prefix = (await tx.one(`SELECT SettingValue FROM dbo.TenantSettings WHERE TenantId = @tid AND SettingKey = 'patient.number_prefix'`,
+    const prefix = (await tx.one(`SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = @tid AND SettingKey = 'patient.number_prefix'`,
       { tid: req.ctx.tenantId }))?.SettingValue || 'PT';
     const n = await nextSequence(tx, req.ctx.tenantId, 'patient');
     const row = await tx.one(`
-      INSERT INTO dbo.Patients (TenantId, PatientNumber, FirstName, LastName, Gender, DateOfBirth, Phone, Email, AddressLine, City, BloodGroup,
+      INSERT INTO hms.Patients (TenantId, PatientNumber, FirstName, LastName, Gender, DateOfBirth, Phone, Email, AddressLine, City, BloodGroup,
         EmergencyContactName, EmergencyContactPhone, CreatedByUserId)
       OUTPUT INSERTED.PatientId, INSERTED.PatientNumber
       VALUES (@tid, @num, @first, @last, @gender, @dob, @phone, @email, @addr, @city, @blood, @ecName, @ecPhone, @uid)`,
@@ -91,12 +91,12 @@ router.post('/', requirePermission('patients.write'), validate(patientSchema), a
 router.get('/:id', requirePermission('patients.read'), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [rows, appts] = await db.many(`
-    SELECT ${SELECT_COLS} FROM dbo.Patients WHERE TenantId = @tid AND PatientId = @id;
+    SELECT ${SELECT_COLS} FROM hms.Patients WHERE TenantId = @tid AND PatientId = @id;
     SELECT TOP 50 a.AppointmentId AS id, a.AppointmentNumber AS number, a.StartAt AS startAt, a.Status AS status, a.VisitType AS visitType,
            a.Reason AS reason, s.FullName AS doctorName, d.Name AS departmentName
-    FROM dbo.Appointments a
-    JOIN dbo.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
-    LEFT JOIN dbo.Departments d ON d.TenantId = a.TenantId AND d.DepartmentId = a.DepartmentId
+    FROM hms.Appointments a
+    JOIN hms.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
+    LEFT JOIN hms.Departments d ON d.TenantId = a.TenantId AND d.DepartmentId = a.DepartmentId
     WHERE a.TenantId = @tid AND a.PatientId = @id ORDER BY a.StartAt DESC;`, { tid: req.ctx.tenantId, id });
   // Same 404 whether the record is missing or belongs to another hospital (no existence leak).
   if (!rows[0]) throw notFound('Patient not found.');
@@ -107,11 +107,11 @@ router.get('/:id', requirePermission('patients.read'), asyncHandler(async (req, 
 router.patch('/:id', requirePermission('patients.write'), validate(patientSchema.partial().strict()), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   await withTransaction(async (tx) => {
-    const cur = await tx.one(`SELECT ${SELECT_COLS} FROM dbo.Patients WITH (UPDLOCK) WHERE TenantId = @tid AND PatientId = @id`, { tid: req.ctx.tenantId, id });
+    const cur = await tx.one(`SELECT ${SELECT_COLS} FROM hms.Patients WITH (UPDLOCK) WHERE TenantId = @tid AND PatientId = @id`, { tid: req.ctx.tenantId, id });
     if (!cur) throw notFound('Patient not found.');
     const merged = { ...cur, ...req.body };
     await tx.exec(`
-      UPDATE dbo.Patients SET FirstName = @first, LastName = @last, Gender = @gender, DateOfBirth = @dob, Phone = @phone, Email = @email,
+      UPDATE hms.Patients SET FirstName = @first, LastName = @last, Gender = @gender, DateOfBirth = @dob, Phone = @phone, Email = @email,
         AddressLine = @addr, City = @city, BloodGroup = @blood, EmergencyContactName = @ecName, EmergencyContactPhone = @ecPhone, UpdatedAt = SYSUTCDATETIME()
       WHERE TenantId = @tid AND PatientId = @id`, { tid: req.ctx.tenantId, id, ...toParams(merged) });
     await auditTenant(req, 'patient.updated', 'patient', id, { fields: Object.keys(req.body).join(',') }, tx);
@@ -123,7 +123,7 @@ router.post('/:id/archive', requirePermission('patients.archive'),
   validate(z.object({ archived: z.boolean() }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
-    const n = await db.exec(`UPDATE dbo.Patients SET IsArchived = @a, ArchivedAt = CASE WHEN @a = 1 THEN SYSUTCDATETIME() ELSE NULL END, UpdatedAt = SYSUTCDATETIME()
+    const n = await db.exec(`UPDATE hms.Patients SET IsArchived = @a, ArchivedAt = CASE WHEN @a = 1 THEN SYSUTCDATETIME() ELSE NULL END, UpdatedAt = SYSUTCDATETIME()
                              WHERE TenantId = @tid AND PatientId = @id`, { tid: req.ctx.tenantId, id, a: req.body.archived });
     if (!n) throw notFound('Patient not found.');
     await auditTenant(req, req.body.archived ? 'patient.archived' : 'patient.restored', 'patient', id);

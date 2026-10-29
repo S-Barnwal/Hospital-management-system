@@ -8,7 +8,7 @@ export { sanitiseMetadata };
  * Failures are logged but never break the business operation when outside a transaction.
  */
 export async function audit({ tenantId = null, actorType, actorId = null, action, entityType = null, entityId = null, metadata = null, ip = null }, runner = null) {
-  const text = `INSERT INTO dbo.AuditLogs (TenantId, ActorType, ActorId, Action, EntityType, EntityId, Metadata, IpAddress)
+  const text = `INSERT INTO hms.AuditLogs (TenantId, ActorType, ActorId, Action, EntityType, EntityId, Metadata, IpAddress)
                 VALUES (@tenantId, @actorType, @actorId, @action, @entityType, @entityId, @metadata, @ip)`;
   const params = {
     tenantId, actorType, actorId, action, entityType,

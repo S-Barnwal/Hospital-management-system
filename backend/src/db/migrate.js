@@ -1,5 +1,5 @@
 // Applies versioned SQL scripts from /database/migrations in filename order.
-// Each file runs inside a transaction and is recorded in dbo.SchemaMigrations with a checksum.
+// Each file runs inside a transaction and is recorded in hms.SchemaMigrations with a checksum.
 // Usage: npm run db:migrate            (apply pending)
 //        npm run db:migrate -- --status (list applied / pending)
 import { readdir, readFile } from 'node:fs/promises';
@@ -19,10 +19,14 @@ export function splitBatches(script) {
     .filter((b) => b.length > 0);
 }
 
+/** All HMS tables live in their own schema so they never clash with other apps' tables in the same database. */
+export const SCHEMA = 'hms';
+
 async function ensureTable(pool) {
+  await pool.request().query(`IF SCHEMA_ID('${SCHEMA}') IS NULL EXEC('CREATE SCHEMA ${SCHEMA} AUTHORIZATION dbo');`);
   await pool.request().query(`
-    IF OBJECT_ID('dbo.SchemaMigrations', 'U') IS NULL
-    CREATE TABLE dbo.SchemaMigrations (
+    IF OBJECT_ID('hms.SchemaMigrations', 'U') IS NULL
+    CREATE TABLE hms.SchemaMigrations (
       Version   NVARCHAR(200) NOT NULL CONSTRAINT PK_SchemaMigrations PRIMARY KEY,
       Checksum  CHAR(64) NOT NULL,
       AppliedAt DATETIME2(3) NOT NULL CONSTRAINT DF_SchemaMigrations_AppliedAt DEFAULT (SYSUTCDATETIME())
@@ -33,7 +37,7 @@ export async function migrate({ statusOnly = false, log = console.log } = {}) {
   const pool = await getPool();
   await ensureTable(pool);
   const applied = new Map(
-    (await pool.request().query('SELECT Version, Checksum FROM dbo.SchemaMigrations')).recordset.map((r) => [r.Version, r.Checksum]),
+    (await pool.request().query('SELECT Version, Checksum FROM hms.SchemaMigrations')).recordset.map((r) => [r.Version, r.Checksum]),
   );
   const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
 
@@ -60,7 +64,7 @@ export async function migrate({ statusOnly = false, log = console.log } = {}) {
       await new sql.Request(tx)
         .input('v', sql.NVarChar(200), file)
         .input('c', sql.Char(64), checksum)
-        .query('INSERT INTO dbo.SchemaMigrations (Version, Checksum) VALUES (@v, @c)');
+        .query('INSERT INTO hms.SchemaMigrations (Version, Checksum) VALUES (@v, @c)');
       await tx.commit();
       log(`✓ ${file}`);
     } catch (err) {

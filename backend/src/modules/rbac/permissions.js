@@ -1,5 +1,5 @@
 // Single source of truth for permission codes and default role templates.
-// `npm run db:seed` upserts PERMISSIONS into dbo.Permissions; provisioning copies ROLE_TEMPLATES into each new tenant.
+// `npm run db:seed` upserts PERMISSIONS into hms.Permissions; provisioning copies ROLE_TEMPLATES into each new tenant.
 
 export const PERMISSIONS = [
   // implemented (Phase 5)

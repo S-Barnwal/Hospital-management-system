@@ -22,23 +22,23 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
 
   const [counts, todayByStatus, trend, upcoming, activity] = await db.many(`
     SELECT
-      (SELECT COUNT(*) FROM dbo.Patients WHERE TenantId = @tid AND IsArchived = 0) AS totalPatients,
-      (SELECT COUNT(*) FROM dbo.Patients WHERE TenantId = @tid AND CreatedAt >= @monthStart) AS newPatientsThisMonth,
-      (SELECT COUNT(*) FROM dbo.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType = 'doctor') AS doctors,
-      (SELECT COUNT(*) FROM dbo.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType <> 'doctor') AS staff,
-      (SELECT COUNT(*) FROM dbo.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end AND Status = 'completed' AND VisitType IN ('opd','follow_up')) AS opdVisitsToday;
-    SELECT Status, COUNT(*) AS n FROM dbo.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end GROUP BY Status;
+      (SELECT COUNT(*) FROM hms.Patients WHERE TenantId = @tid AND IsArchived = 0) AS totalPatients,
+      (SELECT COUNT(*) FROM hms.Patients WHERE TenantId = @tid AND CreatedAt >= @monthStart) AS newPatientsThisMonth,
+      (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType = 'doctor') AS doctors,
+      (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType <> 'doctor') AS staff,
+      (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end AND Status = 'completed' AND VisitType IN ('opd','follow_up')) AS opdVisitsToday;
+    SELECT Status, COUNT(*) AS n FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end GROUP BY Status;
     SELECT CAST(DATEADD(MINUTE, @offset, StartAt) AS DATE) AS day, COUNT(*) AS n
-      FROM dbo.Appointments WHERE TenantId = @tid AND StartAt >= @trendStart AND StartAt < @end AND Status <> 'cancelled'
+      FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @trendStart AND StartAt < @end AND Status <> 'cancelled'
       GROUP BY CAST(DATEADD(MINUTE, @offset, StartAt) AS DATE);
     SELECT TOP 6 a.AppointmentId, a.AppointmentNumber, a.StartAt, a.Status, p.FirstName, p.LastName, p.PatientNumber, s.FullName AS DoctorName
-      FROM dbo.Appointments a
-      JOIN dbo.Patients p ON p.TenantId = a.TenantId AND p.PatientId = a.PatientId
-      JOIN dbo.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
+      FROM hms.Appointments a
+      JOIN hms.Patients p ON p.TenantId = a.TenantId AND p.PatientId = a.PatientId
+      JOIN hms.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
       WHERE a.TenantId = @tid AND a.StartAt >= SYSUTCDATETIME() AND a.Status IN ('scheduled','checked_in')
       ORDER BY a.StartAt;
     SELECT TOP 8 a.Action, a.EntityType, a.CreatedAt, u.FullName AS ActorName
-      FROM dbo.AuditLogs a LEFT JOIN dbo.Users u ON u.UserId = a.ActorId AND u.TenantId = a.TenantId AND a.ActorType = 'tenant'
+      FROM hms.AuditLogs a LEFT JOIN hms.Users u ON u.UserId = a.ActorId AND u.TenantId = a.TenantId AND a.ActorType = 'tenant'
       WHERE a.TenantId = @tid AND a.Action NOT LIKE 'auth.%' ORDER BY a.CreatedAt DESC;`,
   { tid: req.ctx.tenantId, start, end, monthStart, trendStart, offset });
 

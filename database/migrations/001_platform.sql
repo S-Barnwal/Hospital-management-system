@@ -2,11 +2,16 @@
    001_platform.sql — SaaS platform tables (tenants, plans, billing, auth)
    Target: Microsoft SQL Server 2016+ / Azure SQL
    All timestamps are UTC (SYSUTCDATETIME). Money is DECIMAL(12,2).
-   Applied by backend/src/db/migrate.js (tracked in dbo.SchemaMigrations).
+   Applied by backend/src/db/migrate.js (tracked in hms.SchemaMigrations).
+   All objects live in the [hms] schema so they never clash with other
+   applications' tables (e.g. an existing dbo.Users / dbo.Payments).
    ===================================================================== */
 
+IF SCHEMA_ID('hms') IS NULL EXEC('CREATE SCHEMA hms AUTHORIZATION dbo');
+GO
+
 /* ---------- Plans ---------- */
-CREATE TABLE dbo.Plans (
+CREATE TABLE hms.Plans (
     PlanId            INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Plans PRIMARY KEY,
     Code              NVARCHAR(50)  NOT NULL CONSTRAINT UQ_Plans_Code UNIQUE,
     Name              NVARCHAR(100) NOT NULL,
@@ -30,9 +35,9 @@ CREATE TABLE dbo.Plans (
     CONSTRAINT CK_Plans_Tax CHECK (TaxRatePercent >= 0 AND TaxRatePercent <= 100)
 );
 
-CREATE TABLE dbo.PlanFeatures (
+CREATE TABLE hms.PlanFeatures (
     PlanFeatureId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PlanFeatures PRIMARY KEY,
-    PlanId        INT NOT NULL CONSTRAINT FK_PlanFeatures_Plans REFERENCES dbo.Plans(PlanId) ON DELETE CASCADE,
+    PlanId        INT NOT NULL CONSTRAINT FK_PlanFeatures_Plans REFERENCES hms.Plans(PlanId) ON DELETE CASCADE,
     FeatureKey    NVARCHAR(60)  NOT NULL,      -- module key e.g. patients, appointments, billing
     Label         NVARCHAR(200) NOT NULL,
     IsIncluded    BIT NOT NULL CONSTRAINT DF_PlanFeatures_Included DEFAULT (1),
@@ -41,7 +46,7 @@ CREATE TABLE dbo.PlanFeatures (
 );
 
 /* ---------- Tenants ---------- */
-CREATE TABLE dbo.Tenants (
+CREATE TABLE hms.Tenants (
     TenantId      INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Tenants PRIMARY KEY,
     Slug          NVARCHAR(63)  NOT NULL CONSTRAINT UQ_Tenants_Slug UNIQUE,
     Name          NVARCHAR(200) NOT NULL,
@@ -61,17 +66,17 @@ CREATE TABLE dbo.Tenants (
     CONSTRAINT CK_Tenants_Slug CHECK (Slug NOT LIKE '%[^a-z0-9-]%' AND LEN(Slug) >= 3)
 );
 
-CREATE TABLE dbo.TenantDomains (
+CREATE TABLE hms.TenantDomains (
     TenantDomainId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_TenantDomains PRIMARY KEY,
-    TenantId       INT NOT NULL CONSTRAINT FK_TenantDomains_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId       INT NOT NULL CONSTRAINT FK_TenantDomains_Tenants REFERENCES hms.Tenants(TenantId),
     Hostname       NVARCHAR(253) NOT NULL CONSTRAINT UQ_TenantDomains_Host UNIQUE,
     IsPrimary      BIT NOT NULL CONSTRAINT DF_TenantDomains_Primary DEFAULT (0),
     IsVerified     BIT NOT NULL CONSTRAINT DF_TenantDomains_Verified DEFAULT (0),
     CreatedAt      DATETIME2(3) NOT NULL CONSTRAINT DF_TenantDomains_CreatedAt DEFAULT (SYSUTCDATETIME())
 );
 
-CREATE TABLE dbo.TenantSettings (
-    TenantId     INT NOT NULL CONSTRAINT FK_TenantSettings_Tenants REFERENCES dbo.Tenants(TenantId),
+CREATE TABLE hms.TenantSettings (
+    TenantId     INT NOT NULL CONSTRAINT FK_TenantSettings_Tenants REFERENCES hms.Tenants(TenantId),
     SettingKey   NVARCHAR(100) NOT NULL,
     SettingValue NVARCHAR(2000) NULL,
     UpdatedAt    DATETIME2(3) NOT NULL CONSTRAINT DF_TenantSettings_UpdatedAt DEFAULT (SYSUTCDATETIME()),
@@ -80,15 +85,15 @@ CREATE TABLE dbo.TenantSettings (
 
 /* Per-tenant counters for patient numbers, appointment numbers, invoice numbers.
    Incremented inside a transaction with UPDLOCK so numbers are sequential and unique per tenant. */
-CREATE TABLE dbo.TenantSequences (
-    TenantId    INT NOT NULL CONSTRAINT FK_TenantSequences_Tenants REFERENCES dbo.Tenants(TenantId),
+CREATE TABLE hms.TenantSequences (
+    TenantId    INT NOT NULL CONSTRAINT FK_TenantSequences_Tenants REFERENCES hms.Tenants(TenantId),
     SequenceKey NVARCHAR(40) NOT NULL,
     NextValue   BIGINT NOT NULL CONSTRAINT DF_TenantSequences_Next DEFAULT (1),
     CONSTRAINT PK_TenantSequences PRIMARY KEY (TenantId, SequenceKey)
 );
 
 /* ---------- RBAC ---------- */
-CREATE TABLE dbo.Permissions (
+CREATE TABLE hms.Permissions (
     PermissionId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Permissions PRIMARY KEY,
     Code         NVARCHAR(80)  NOT NULL CONSTRAINT UQ_Permissions_Code UNIQUE,
     Module       NVARCHAR(40)  NOT NULL,
@@ -97,9 +102,9 @@ CREATE TABLE dbo.Permissions (
 
 /* Roles are tenant-owned: provisioning copies the default role templates into every tenant,
    so a hospital can customise its own roles without affecting others. */
-CREATE TABLE dbo.Roles (
+CREATE TABLE hms.Roles (
     RoleId      INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Roles PRIMARY KEY,
-    TenantId    INT NOT NULL CONSTRAINT FK_Roles_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId    INT NOT NULL CONSTRAINT FK_Roles_Tenants REFERENCES hms.Tenants(TenantId),
     Code        NVARCHAR(50)  NOT NULL,
     Name        NVARCHAR(100) NOT NULL,
     Description NVARCHAR(300) NULL,
@@ -109,16 +114,16 @@ CREATE TABLE dbo.Roles (
     CONSTRAINT UQ_Roles_Tenant_Id UNIQUE (TenantId, RoleId)          -- target for composite FKs
 );
 
-CREATE TABLE dbo.RolePermissions (
-    RoleId       INT NOT NULL CONSTRAINT FK_RolePermissions_Roles REFERENCES dbo.Roles(RoleId) ON DELETE CASCADE,
-    PermissionId INT NOT NULL CONSTRAINT FK_RolePermissions_Permissions REFERENCES dbo.Permissions(PermissionId),
+CREATE TABLE hms.RolePermissions (
+    RoleId       INT NOT NULL CONSTRAINT FK_RolePermissions_Roles REFERENCES hms.Roles(RoleId) ON DELETE CASCADE,
+    PermissionId INT NOT NULL CONSTRAINT FK_RolePermissions_Permissions REFERENCES hms.Permissions(PermissionId),
     CONSTRAINT PK_RolePermissions PRIMARY KEY (RoleId, PermissionId)
 );
 
-/* Hospital (tenant) users. Platform super admins live in dbo.PlatformUsers — deliberately separate. */
-CREATE TABLE dbo.Users (
+/* Hospital (tenant) users. Platform super admins live in hms.PlatformUsers — deliberately separate. */
+CREATE TABLE hms.Users (
     UserId           BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Users PRIMARY KEY,
-    TenantId         INT NOT NULL CONSTRAINT FK_Users_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId         INT NOT NULL CONSTRAINT FK_Users_Tenants REFERENCES hms.Tenants(TenantId),
     Email            NVARCHAR(254) NOT NULL,
     PasswordHash     NVARCHAR(200) NOT NULL,
     FullName         NVARCHAR(150) NOT NULL,
@@ -134,19 +139,19 @@ CREATE TABLE dbo.Users (
     CONSTRAINT UQ_Users_Tenant_Id UNIQUE (TenantId, UserId),
     CONSTRAINT CK_Users_Status CHECK (Status IN ('active','invited','disabled'))
 );
-CREATE INDEX IX_Users_Email ON dbo.Users (Email);
+CREATE INDEX IX_Users_Email ON hms.Users (Email);
 
 /* Composite FKs guarantee a user can only hold roles of their own tenant. */
-CREATE TABLE dbo.UserRoles (
+CREATE TABLE hms.UserRoles (
     TenantId INT    NOT NULL,
     UserId   BIGINT NOT NULL,
     RoleId   INT    NOT NULL,
     CONSTRAINT PK_UserRoles PRIMARY KEY (TenantId, UserId, RoleId),
-    CONSTRAINT FK_UserRoles_Users FOREIGN KEY (TenantId, UserId) REFERENCES dbo.Users (TenantId, UserId) ON DELETE CASCADE,
-    CONSTRAINT FK_UserRoles_Roles FOREIGN KEY (TenantId, RoleId) REFERENCES dbo.Roles (TenantId, RoleId)
+    CONSTRAINT FK_UserRoles_Users FOREIGN KEY (TenantId, UserId) REFERENCES hms.Users (TenantId, UserId) ON DELETE CASCADE,
+    CONSTRAINT FK_UserRoles_Roles FOREIGN KEY (TenantId, RoleId) REFERENCES hms.Roles (TenantId, RoleId)
 );
 
-CREATE TABLE dbo.PlatformUsers (
+CREATE TABLE hms.PlatformUsers (
     PlatformUserId   INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PlatformUsers PRIMARY KEY,
     Email            NVARCHAR(254) NOT NULL CONSTRAINT UQ_PlatformUsers_Email UNIQUE,
     PasswordHash     NVARCHAR(200) NOT NULL,
@@ -162,7 +167,7 @@ CREATE TABLE dbo.PlatformUsers (
 );
 
 /* Refresh sessions (rotated on every refresh, revocable). Only SHA-256 hashes of tokens are stored. */
-CREATE TABLE dbo.UserSessions (
+CREATE TABLE hms.UserSessions (
     SessionId        UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_UserSessions PRIMARY KEY,
     SubjectType      NVARCHAR(10) NOT NULL,     -- 'tenant' | 'platform'
     SubjectId        BIGINT NOT NULL,
@@ -176,9 +181,9 @@ CREATE TABLE dbo.UserSessions (
     LastUsedAt       DATETIME2(3) NULL,
     CONSTRAINT CK_UserSessions_Subject CHECK (SubjectType IN ('tenant','platform'))
 );
-CREATE INDEX IX_UserSessions_Subject ON dbo.UserSessions (SubjectType, SubjectId) INCLUDE (RevokedAt, ExpiresAt);
+CREATE INDEX IX_UserSessions_Subject ON hms.UserSessions (SubjectType, SubjectId) INCLUDE (RevokedAt, ExpiresAt);
 
-CREATE TABLE dbo.PasswordResetTokens (
+CREATE TABLE hms.PasswordResetTokens (
     TokenId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PasswordResetTokens PRIMARY KEY,
     SubjectType NVARCHAR(10) NOT NULL,
     SubjectId   BIGINT NOT NULL,
@@ -189,9 +194,9 @@ CREATE TABLE dbo.PasswordResetTokens (
 );
 
 /* ---------- Onboarding, subscriptions, payments ---------- */
-CREATE TABLE dbo.OnboardingRequests (
+CREATE TABLE hms.OnboardingRequests (
     OnboardingId      UNIQUEIDENTIFIER NOT NULL CONSTRAINT PK_OnboardingRequests PRIMARY KEY,
-    PlanId            INT NOT NULL CONSTRAINT FK_Onboarding_Plans REFERENCES dbo.Plans(PlanId),
+    PlanId            INT NOT NULL CONSTRAINT FK_Onboarding_Plans REFERENCES hms.Plans(PlanId),
     BillingInterval   NVARCHAR(10) NOT NULL,
     OrgName           NVARCHAR(200) NOT NULL,
     Slug              NVARCHAR(63)  NOT NULL,
@@ -206,7 +211,7 @@ CREATE TABLE dbo.OnboardingRequests (
     TotalAmount       DECIMAL(12,2) NOT NULL,
     Currency          CHAR(3) NOT NULL,
     Status            NVARCHAR(20) NOT NULL CONSTRAINT DF_Onboarding_Status DEFAULT ('pending_payment'),
-    TenantId          INT NULL CONSTRAINT FK_Onboarding_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId          INT NULL CONSTRAINT FK_Onboarding_Tenants REFERENCES hms.Tenants(TenantId),
     FailureReason     NVARCHAR(500) NULL,
     ExpiresAt         DATETIME2(3) NOT NULL,
     CreatedAt         DATETIME2(3) NOT NULL CONSTRAINT DF_Onboarding_CreatedAt DEFAULT (SYSUTCDATETIME()),
@@ -214,12 +219,12 @@ CREATE TABLE dbo.OnboardingRequests (
     CONSTRAINT CK_Onboarding_Interval CHECK (BillingInterval IN ('monthly','annual')),
     CONSTRAINT CK_Onboarding_Status CHECK (Status IN ('pending_payment','paid','provisioned','failed','cancelled','expired'))
 );
-CREATE INDEX IX_Onboarding_Slug ON dbo.OnboardingRequests (Slug, Status);
+CREATE INDEX IX_Onboarding_Slug ON hms.OnboardingRequests (Slug, Status);
 
-CREATE TABLE dbo.Subscriptions (
+CREATE TABLE hms.Subscriptions (
     SubscriptionId     INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Subscriptions PRIMARY KEY,
-    TenantId           INT NOT NULL CONSTRAINT FK_Subscriptions_Tenants REFERENCES dbo.Tenants(TenantId),
-    PlanId             INT NOT NULL CONSTRAINT FK_Subscriptions_Plans REFERENCES dbo.Plans(PlanId),
+    TenantId           INT NOT NULL CONSTRAINT FK_Subscriptions_Tenants REFERENCES hms.Tenants(TenantId),
+    PlanId             INT NOT NULL CONSTRAINT FK_Subscriptions_Plans REFERENCES hms.Plans(PlanId),
     BillingInterval    NVARCHAR(10) NOT NULL,
     Status             NVARCHAR(20) NOT NULL,
     CurrentPeriodStart DATETIME2(3) NOT NULL,
@@ -231,15 +236,15 @@ CREATE TABLE dbo.Subscriptions (
     CONSTRAINT CK_Subscriptions_Interval CHECK (BillingInterval IN ('monthly','annual')),
     CONSTRAINT CK_Subscriptions_Status CHECK (Status IN ('pending','active','past_due','expired','cancelled'))
 );
-CREATE INDEX IX_Subscriptions_Tenant ON dbo.Subscriptions (TenantId, Status) INCLUDE (CurrentPeriodEnd);
+CREATE INDEX IX_Subscriptions_Tenant ON hms.Subscriptions (TenantId, Status) INCLUDE (CurrentPeriodEnd);
 
-CREATE TABLE dbo.Payments (
+CREATE TABLE hms.Payments (
     PaymentId         BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Payments PRIMARY KEY,
-    TenantId          INT NULL CONSTRAINT FK_Payments_Tenants REFERENCES dbo.Tenants(TenantId),
-    OnboardingId      UNIQUEIDENTIFIER NULL CONSTRAINT FK_Payments_Onboarding REFERENCES dbo.OnboardingRequests(OnboardingId),
-    SubscriptionId    INT NULL CONSTRAINT FK_Payments_Subscriptions REFERENCES dbo.Subscriptions(SubscriptionId),
+    TenantId          INT NULL CONSTRAINT FK_Payments_Tenants REFERENCES hms.Tenants(TenantId),
+    OnboardingId      UNIQUEIDENTIFIER NULL CONSTRAINT FK_Payments_Onboarding REFERENCES hms.OnboardingRequests(OnboardingId),
+    SubscriptionId    INT NULL CONSTRAINT FK_Payments_Subscriptions REFERENCES hms.Subscriptions(SubscriptionId),
     Purpose           NVARCHAR(20) NOT NULL,      -- 'onboarding' | 'renewal'
-    PlanId            INT NULL CONSTRAINT FK_Payments_Plans REFERENCES dbo.Plans(PlanId),
+    PlanId            INT NULL CONSTRAINT FK_Payments_Plans REFERENCES hms.Plans(PlanId),
     BillingInterval   NVARCHAR(10) NULL,
     Provider          NVARCHAR(20) NOT NULL,      -- 'razorpay' | 'stripe' | 'sandbox'
     IsSandbox         BIT NOT NULL,
@@ -257,11 +262,11 @@ CREATE TABLE dbo.Payments (
     CONSTRAINT CK_Payments_Status CHECK (Status IN ('created','paid','failed','cancelled','refunded','expired')),
     CONSTRAINT CK_Payments_Amount CHECK (Amount >= 0)
 );
-CREATE UNIQUE INDEX UX_Payments_ProviderPayment ON dbo.Payments (Provider, ProviderPaymentId) WHERE ProviderPaymentId IS NOT NULL;
-CREATE INDEX IX_Payments_Tenant ON dbo.Payments (TenantId, CreatedAt DESC);
+CREATE UNIQUE INDEX UX_Payments_ProviderPayment ON hms.Payments (Provider, ProviderPaymentId) WHERE ProviderPaymentId IS NOT NULL;
+CREATE INDEX IX_Payments_Tenant ON hms.Payments (TenantId, CreatedAt DESC);
 
 /* Webhook idempotency: each provider event is processed at most once. */
-CREATE TABLE dbo.PaymentEvents (
+CREATE TABLE hms.PaymentEvents (
     PaymentEventId  BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_PaymentEvents PRIMARY KEY,
     Provider        NVARCHAR(20)  NOT NULL,
     ProviderEventId NVARCHAR(150) NOT NULL,
@@ -273,10 +278,10 @@ CREATE TABLE dbo.PaymentEvents (
     CONSTRAINT UQ_PaymentEvents UNIQUE (Provider, ProviderEventId)
 );
 
-CREATE TABLE dbo.Invoices (
+CREATE TABLE hms.Invoices (
     InvoiceId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Invoices PRIMARY KEY,
-    TenantId      INT NOT NULL CONSTRAINT FK_Invoices_Tenants REFERENCES dbo.Tenants(TenantId),
-    PaymentId     BIGINT NOT NULL CONSTRAINT FK_Invoices_Payments REFERENCES dbo.Payments(PaymentId),
+    TenantId      INT NOT NULL CONSTRAINT FK_Invoices_Tenants REFERENCES hms.Tenants(TenantId),
+    PaymentId     BIGINT NOT NULL CONSTRAINT FK_Invoices_Payments REFERENCES hms.Payments(PaymentId),
     InvoiceNumber NVARCHAR(40) NOT NULL CONSTRAINT UQ_Invoices_Number UNIQUE,
     Description   NVARCHAR(300) NOT NULL,
     Subtotal      DECIMAL(12,2) NOT NULL,
@@ -289,7 +294,7 @@ CREATE TABLE dbo.Invoices (
 );
 
 /* ---------- Sales / support ---------- */
-CREATE TABLE dbo.DemoRequests (
+CREATE TABLE hms.DemoRequests (
     DemoRequestId   INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_DemoRequests PRIMARY KEY,
     OrgName         NVARCHAR(200) NOT NULL,
     ContactName     NVARCHAR(150) NOT NULL,
@@ -301,23 +306,23 @@ CREATE TABLE dbo.DemoRequests (
     PreferredAt     DATETIME2(3) NULL,
     Message         NVARCHAR(2000) NULL,
     Status          NVARCHAR(20) NOT NULL CONSTRAINT DF_DemoRequests_Status DEFAULT ('new'),
-    AssignedTo      INT NULL CONSTRAINT FK_DemoRequests_PlatformUsers REFERENCES dbo.PlatformUsers(PlatformUserId),
+    AssignedTo      INT NULL CONSTRAINT FK_DemoRequests_PlatformUsers REFERENCES hms.PlatformUsers(PlatformUserId),
     SourceIp        NVARCHAR(64) NULL,
     CreatedAt       DATETIME2(3) NOT NULL CONSTRAINT DF_DemoRequests_CreatedAt DEFAULT (SYSUTCDATETIME()),
     UpdatedAt       DATETIME2(3) NOT NULL CONSTRAINT DF_DemoRequests_UpdatedAt DEFAULT (SYSUTCDATETIME()),
     CONSTRAINT CK_DemoRequests_Status CHECK (Status IN ('new','contacted','scheduled','completed','closed'))
 );
-CREATE INDEX IX_DemoRequests_Status ON dbo.DemoRequests (Status, CreatedAt DESC);
+CREATE INDEX IX_DemoRequests_Status ON hms.DemoRequests (Status, CreatedAt DESC);
 
-CREATE TABLE dbo.DemoRequestNotes (
+CREATE TABLE hms.DemoRequestNotes (
     NoteId         INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_DemoRequestNotes PRIMARY KEY,
-    DemoRequestId  INT NOT NULL CONSTRAINT FK_DemoRequestNotes_Demo REFERENCES dbo.DemoRequests(DemoRequestId) ON DELETE CASCADE,
-    PlatformUserId INT NOT NULL CONSTRAINT FK_DemoRequestNotes_User REFERENCES dbo.PlatformUsers(PlatformUserId),
+    DemoRequestId  INT NOT NULL CONSTRAINT FK_DemoRequestNotes_Demo REFERENCES hms.DemoRequests(DemoRequestId) ON DELETE CASCADE,
+    PlatformUserId INT NOT NULL CONSTRAINT FK_DemoRequestNotes_User REFERENCES hms.PlatformUsers(PlatformUserId),
     Note           NVARCHAR(2000) NOT NULL,
     CreatedAt      DATETIME2(3) NOT NULL CONSTRAINT DF_DemoRequestNotes_CreatedAt DEFAULT (SYSUTCDATETIME())
 );
 
-CREATE TABLE dbo.ContactMessages (
+CREATE TABLE hms.ContactMessages (
     ContactMessageId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_ContactMessages PRIMARY KEY,
     Name      NVARCHAR(150) NOT NULL,
     Email     NVARCHAR(254) NOT NULL,
@@ -329,7 +334,7 @@ CREATE TABLE dbo.ContactMessages (
     CreatedAt DATETIME2(3) NOT NULL CONSTRAINT DF_ContactMessages_CreatedAt DEFAULT (SYSUTCDATETIME())
 );
 
-CREATE TABLE dbo.PlatformSettings (
+CREATE TABLE hms.PlatformSettings (
     SettingKey   NVARCHAR(100) NOT NULL CONSTRAINT PK_PlatformSettings PRIMARY KEY,
     SettingValue NVARCHAR(4000) NULL,
     UpdatedAt    DATETIME2(3) NOT NULL CONSTRAINT DF_PlatformSettings_UpdatedAt DEFAULT (SYSUTCDATETIME())
@@ -337,7 +342,7 @@ CREATE TABLE dbo.PlatformSettings (
 
 /* ---------- Audit & notifications ---------- */
 /* Never store passwords, tokens or clinical details in Metadata. */
-CREATE TABLE dbo.AuditLogs (
+CREATE TABLE hms.AuditLogs (
     AuditLogId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_AuditLogs PRIMARY KEY,
     TenantId   INT NULL,                       -- NULL = platform-level event
     ActorType  NVARCHAR(10) NOT NULL,          -- 'tenant' | 'platform' | 'system' | 'public'
@@ -349,12 +354,12 @@ CREATE TABLE dbo.AuditLogs (
     IpAddress  NVARCHAR(64) NULL,
     CreatedAt  DATETIME2(3) NOT NULL CONSTRAINT DF_AuditLogs_CreatedAt DEFAULT (SYSUTCDATETIME())
 );
-CREATE INDEX IX_AuditLogs_Tenant ON dbo.AuditLogs (TenantId, CreatedAt DESC);
-CREATE INDEX IX_AuditLogs_Action ON dbo.AuditLogs (Action, CreatedAt DESC);
+CREATE INDEX IX_AuditLogs_Tenant ON hms.AuditLogs (TenantId, CreatedAt DESC);
+CREATE INDEX IX_AuditLogs_Action ON hms.AuditLogs (Action, CreatedAt DESC);
 
-CREATE TABLE dbo.Notifications (
+CREATE TABLE hms.Notifications (
     NotificationId BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Notifications PRIMARY KEY,
-    TenantId       INT NOT NULL CONSTRAINT FK_Notifications_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId       INT NOT NULL CONSTRAINT FK_Notifications_Tenants REFERENCES hms.Tenants(TenantId),
     UserId         BIGINT NULL,
     Type           NVARCHAR(40) NOT NULL,
     Title          NVARCHAR(200) NOT NULL,
@@ -362,4 +367,4 @@ CREATE TABLE dbo.Notifications (
     IsRead         BIT NOT NULL CONSTRAINT DF_Notifications_Read DEFAULT (0),
     CreatedAt      DATETIME2(3) NOT NULL CONSTRAINT DF_Notifications_CreatedAt DEFAULT (SYSUTCDATETIME())
 );
-CREATE INDEX IX_Notifications_Tenant_User ON dbo.Notifications (TenantId, UserId, IsRead, CreatedAt DESC);
+CREATE INDEX IX_Notifications_Tenant_User ON hms.Notifications (TenantId, UserId, IsRead, CreatedAt DESC);

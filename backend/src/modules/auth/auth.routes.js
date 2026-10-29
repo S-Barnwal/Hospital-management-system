@@ -51,7 +51,7 @@ router.post('/logout', asyncHandler(async (req, res) => {
 }));
 
 router.post('/logout-all', requireTenant, asyncHandler(async (req, res) => {
-  await db.exec(`UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME()
+  await db.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
                  WHERE SubjectType = 'tenant' AND SubjectId = @uid AND TenantId = @tid AND RevokedAt IS NULL`,
   { uid: req.ctx.userId, tid: req.ctx.tenantId });
   clearAuthCookies(res, 'tenant');

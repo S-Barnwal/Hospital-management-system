@@ -13,13 +13,13 @@ export async function createDefaultRoles(tx, tenantId) {
   const ids = {};
   for (const role of ROLE_TEMPLATES) {
     const row = await tx.one(
-      `INSERT INTO dbo.Roles (TenantId, Code, Name, Description, IsSystem)
+      `INSERT INTO hms.Roles (TenantId, Code, Name, Description, IsSystem)
        OUTPUT INSERTED.RoleId VALUES (@tid, @code, @name, @desc, 1)`,
       { tid: tenantId, code: role.code, name: role.name, desc: role.description });
     ids[role.code] = row.RoleId;
     await tx.exec(
-      `INSERT INTO dbo.RolePermissions (RoleId, PermissionId)
-       SELECT @rid, p.PermissionId FROM dbo.Permissions p
+      `INSERT INTO hms.RolePermissions (RoleId, PermissionId)
+       SELECT @rid, p.PermissionId FROM hms.Permissions p
        WHERE p.Code IN (SELECT value FROM STRING_SPLIT(@codes, ','))`,
       { rid: row.RoleId, codes: role.permissions.join(',') });
   }
@@ -35,49 +35,49 @@ export async function createDefaultRoles(tx, tenantId) {
  */
 export async function provisionTenant(tx, o, plan, payment, actor = { type: 'system', id: null, ip: null }) {
   const tenant = await tx.one(
-    `INSERT INTO dbo.Tenants (Slug, Name, Email, Phone, City, FacilityType, Status, Timezone)
+    `INSERT INTO hms.Tenants (Slug, Name, Email, Phone, City, FacilityType, Status, Timezone)
      OUTPUT INSERTED.TenantId VALUES (@slug, @name, @email, @phone, @city, @ftype, 'active', @tz)`,
     { slug: o.slug, name: o.orgName, email: o.ownerEmail, phone: o.phone ?? null, city: o.city ?? null, ftype: o.facilityType ?? null, tz: o.timezone || 'Asia/Kolkata' });
   const tenantId = tenant.TenantId;
 
-  await tx.exec(`INSERT INTO dbo.TenantDomains (TenantId, Hostname, IsPrimary, IsVerified) VALUES (@tid, @host, 1, 1)`,
+  await tx.exec(`INSERT INTO hms.TenantDomains (TenantId, Hostname, IsPrimary, IsVerified) VALUES (@tid, @host, 1, 1)`,
     { tid: tenantId, host: `${o.slug}.${config.appBaseDomain}` });
 
   const prefix = o.slug.replace(/-/g, '').slice(0, 3).toUpperCase() || 'PT';
   await tx.exec(
-    `INSERT INTO dbo.TenantSettings (TenantId, SettingKey, SettingValue) VALUES
+    `INSERT INTO hms.TenantSettings (TenantId, SettingKey, SettingValue) VALUES
        (@tid, 'patient.number_prefix', @prefix),
        (@tid, 'appointment.default_minutes', '15'),
        (@tid, 'hospital.address', NULL)`,
     { tid: tenantId, prefix });
   await tx.exec(
-    `INSERT INTO dbo.TenantSequences (TenantId, SequenceKey, NextValue) VALUES (@tid, 'patient', 1), (@tid, 'appointment', 1)`,
+    `INSERT INTO hms.TenantSequences (TenantId, SequenceKey, NextValue) VALUES (@tid, 'patient', 1), (@tid, 'appointment', 1)`,
     { tid: tenantId });
 
   const roleIds = await createDefaultRoles(tx, tenantId);
 
   const owner = await tx.one(
-    `INSERT INTO dbo.Users (TenantId, Email, PasswordHash, FullName, Phone, Status, IsOwner)
+    `INSERT INTO hms.Users (TenantId, Email, PasswordHash, FullName, Phone, Status, IsOwner)
      OUTPUT INSERTED.UserId VALUES (@tid, @email, @hash, @name, @phone, 'active', 1)`,
     { tid: tenantId, email: o.ownerEmail.toLowerCase(), hash: o.ownerPasswordHash, name: o.ownerName, phone: o.phone ?? null });
-  await tx.exec('INSERT INTO dbo.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @uid, @rid)',
+  await tx.exec('INSERT INTO hms.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @uid, @rid)',
     { tid: tenantId, uid: owner.UserId, rid: roleIds.owner });
 
   for (const name of DEFAULT_DEPARTMENTS) {
-    await tx.exec('INSERT INTO dbo.Departments (TenantId, Name) VALUES (@tid, @name)', { tid: tenantId, name });
+    await tx.exec('INSERT INTO hms.Departments (TenantId, Name) VALUES (@tid, @name)', { tid: tenantId, name });
   }
 
   const start = new Date();
   const end = addInterval(start, plan.interval);
   const sub = await tx.one(
-    `INSERT INTO dbo.Subscriptions (TenantId, PlanId, BillingInterval, Status, CurrentPeriodStart, CurrentPeriodEnd, GraceDays)
+    `INSERT INTO hms.Subscriptions (TenantId, PlanId, BillingInterval, Status, CurrentPeriodStart, CurrentPeriodEnd, GraceDays)
      OUTPUT INSERTED.SubscriptionId VALUES (@tid, @pid, @interval, 'active', @start, @end, @grace)`,
     { tid: tenantId, pid: plan.planId, interval: plan.interval, start, end, grace: config.subscriptionGraceDays });
 
   let invoiceNumber = null;
   if (payment) {
     invoiceNumber = await issueInvoice(tx, { tenantId, payment, description: `${o.planName ?? 'Subscription'} plan — ${plan.interval}` });
-    await tx.exec('UPDATE dbo.Payments SET TenantId = @tid, SubscriptionId = @sid, UpdatedAt = SYSUTCDATETIME() WHERE PaymentId = @pid',
+    await tx.exec('UPDATE hms.Payments SET TenantId = @tid, SubscriptionId = @sid, UpdatedAt = SYSUTCDATETIME() WHERE PaymentId = @pid',
       { tid: tenantId, sid: sub.SubscriptionId, pid: payment.paymentId });
   }
 
@@ -93,7 +93,7 @@ export async function issueInvoice(tx, { tenantId, payment, description }) {
   const ym = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
   const number = `${payment.isSandbox ? 'SBX' : 'INV'}-${ym}-${String(payment.paymentId).padStart(6, '0')}`;
   await tx.exec(
-    `INSERT INTO dbo.Invoices (TenantId, PaymentId, InvoiceNumber, Description, Subtotal, TaxAmount, Total, Currency, IsSandbox)
+    `INSERT INTO hms.Invoices (TenantId, PaymentId, InvoiceNumber, Description, Subtotal, TaxAmount, Total, Currency, IsSandbox)
      VALUES (@tid, @pid, @num, @desc, @sub, @tax, @total, @cur, @sbx)`,
     { tid: tenantId, pid: payment.paymentId, num: number, desc: description, sub: t.money(payment.subtotal), tax: t.money(payment.tax), total: t.money(payment.total), cur: payment.currency, sbx: payment.isSandbox });
   return number;

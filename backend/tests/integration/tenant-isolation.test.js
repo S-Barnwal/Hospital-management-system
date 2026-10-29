@@ -50,7 +50,7 @@ function client() {
 }
 
 async function makeTenant(t) {
-  const plan = await db.one(`SELECT PlanId FROM dbo.Plans WHERE Code = 'professional'`);
+  const plan = await db.one(`SELECT PlanId FROM hms.Plans WHERE Code = 'professional'`);
   const hash = await hashPassword(PASSWORD);
   return withTransaction((tx) => provisionTenant(tx, {
     orgName: `Isolation ${t.slug}`, slug: t.slug, ownerName: 'Owner', ownerEmail: t.email, ownerPasswordHash: hash,
@@ -122,7 +122,7 @@ describe('Tenant isolation over HTTP', () => {
 
   test('database refuses cross-tenant foreign keys even if app code were wrong', async () => {
     await assert.rejects(db.exec(
-      `INSERT INTO dbo.Appointments (TenantId, AppointmentNumber, PatientId, DoctorId, StartAt, EndAt)
+      `INSERT INTO hms.Appointments (TenantId, AppointmentNumber, PatientId, DoctorId, StartAt, EndAt)
        VALUES (@ta, 'X-1', @pb, @da, SYSUTCDATETIME(), DATEADD(MINUTE, 15, SYSUTCDATETIME()))`,
       { ta: ids.tenantA, pb: ids.patientB, da: ids.doctorA }), (e) => e.number === 547);
   });
@@ -144,14 +144,14 @@ describe('Tenant isolation over HTTP', () => {
 
 describe('Payment finalisation idempotency', () => {
   test('processing the same paid order twice provisions once', async () => {
-    const plan = await db.one(`SELECT PlanId FROM dbo.Plans WHERE Code = 'starter'`);
+    const plan = await db.one(`SELECT PlanId FROM hms.Plans WHERE Code = 'starter'`);
     const onboardingId = randomUUID();
     const orderId = `sandbox_order_idem_${suffix}`;
-    await db.exec(`INSERT INTO dbo.OnboardingRequests (OnboardingId, PlanId, BillingInterval, OrgName, Slug, OwnerName, OwnerEmail, OwnerPasswordHash,
+    await db.exec(`INSERT INTO hms.OnboardingRequests (OnboardingId, PlanId, BillingInterval, OrgName, Slug, OwnerName, OwnerEmail, OwnerPasswordHash,
                      Subtotal, TaxAmount, TotalAmount, Currency, ExpiresAt)
                    VALUES (@id, @pid, 'monthly', 'Idem Hospital', @slug, 'Owner', @email, @hash, 999, 179.82, 1178.82, 'INR', DATEADD(HOUR, 1, SYSUTCDATETIME()))`,
     { id: onboardingId, pid: plan.PlanId, slug: `idem-${suffix}`, email: `idem-${suffix}@test.local`, hash: await hashPassword(PASSWORD) });
-    await db.exec(`INSERT INTO dbo.Payments (OnboardingId, Purpose, PlanId, BillingInterval, Provider, IsSandbox, ProviderOrderId, Subtotal, TaxAmount, Amount, Currency)
+    await db.exec(`INSERT INTO hms.Payments (OnboardingId, Purpose, PlanId, BillingInterval, Provider, IsSandbox, ProviderOrderId, Subtotal, TaxAmount, Amount, Currency)
                    VALUES (@id, 'onboarding', @pid, 'monthly', 'sandbox', 1, @order, 999, 179.82, 1178.82, 'INR')`,
     { id: onboardingId, pid: plan.PlanId, order: orderId });
 
@@ -160,9 +160,9 @@ describe('Payment finalisation idempotency', () => {
       finalizePaidOrder({ providerName: 'sandbox', orderId, paymentId: 'sandbox_pay_1', source: 'webhook' }),
     ]);
     assert.equal([r1, r2].filter((r) => r.alreadyProcessed).length, 1);
-    const count = await db.one('SELECT COUNT(*) AS n FROM dbo.Tenants WHERE Slug = @s', { s: `idem-${suffix}` });
+    const count = await db.one('SELECT COUNT(*) AS n FROM hms.Tenants WHERE Slug = @s', { s: `idem-${suffix}` });
     assert.equal(count.n, 1);
-    const inv = await db.one(`SELECT COUNT(*) AS n FROM dbo.Invoices i JOIN dbo.Payments p ON p.PaymentId = i.PaymentId WHERE p.ProviderOrderId = @o`, { o: orderId });
+    const inv = await db.one(`SELECT COUNT(*) AS n FROM hms.Invoices i JOIN hms.Payments p ON p.PaymentId = i.PaymentId WHERE p.ProviderOrderId = @o`, { o: orderId });
     assert.equal(inv.n, 1);
   });
 });

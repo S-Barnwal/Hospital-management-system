@@ -21,10 +21,10 @@ const LIST_COLS = `a.AppointmentId AS id, a.AppointmentNumber AS number, a.Start
   a.VisitType AS visitType, a.Reason AS reason, a.CancelReason AS cancelReason, a.CheckedInAt AS checkedInAt,
   p.PatientId AS patientId, p.PatientNumber AS patientNumber, p.FirstName AS patientFirstName, p.LastName AS patientLastName, p.Phone AS patientPhone,
   s.StaffId AS doctorId, s.FullName AS doctorName, d.DepartmentId AS departmentId, d.Name AS departmentName`;
-const LIST_FROM = `FROM dbo.Appointments a
-  JOIN dbo.Patients p ON p.TenantId = a.TenantId AND p.PatientId = a.PatientId
-  JOIN dbo.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
-  LEFT JOIN dbo.Departments d ON d.TenantId = a.TenantId AND d.DepartmentId = a.DepartmentId`;
+const LIST_FROM = `FROM hms.Appointments a
+  JOIN hms.Patients p ON p.TenantId = a.TenantId AND p.PatientId = a.PatientId
+  JOIN hms.StaffMembers s ON s.TenantId = a.TenantId AND s.StaffId = a.DoctorId
+  LEFT JOIN hms.Departments d ON d.TenantId = a.TenantId AND d.DepartmentId = a.DepartmentId`;
 
 router.get('/', requirePermission('appointments.read'), asyncHandler(async (req, res) => {
   const lq = parseListQuery(req.query, { start: 'a.StartAt', created: 'a.CreatedAt' }, 'start');
@@ -47,7 +47,7 @@ router.get('/', requirePermission('appointments.read'), asyncHandler(async (req,
     AND (@patientId IS NULL OR a.PatientId = @patientId) AND (@status IS NULL OR a.Status = @status)`;
   const [rows, total] = await db.many(`
     SELECT ${LIST_COLS} ${LIST_FROM} ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.Appointments a ${where};`, params);
+    SELECT COUNT(*) AS total FROM hms.Appointments a ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -62,8 +62,8 @@ router.get('/availability', requirePermission('appointments.read'), asyncHandler
   const dow = new Date(`${date}T00:00:00Z`).getUTCDay();
   const [blocks, booked] = await db.many(`
     SELECT CONVERT(CHAR(5), StartTime, 108) AS StartTime, CONVERT(CHAR(5), EndTime, 108) AS EndTime, SlotMinutes
-      FROM dbo.DoctorSchedules WHERE TenantId = @tid AND StaffId = @doc AND DayOfWeek = @dow ORDER BY StartTime;
-    SELECT StartAt, EndAt FROM dbo.Appointments
+      FROM hms.DoctorSchedules WHERE TenantId = @tid AND StaffId = @doc AND DayOfWeek = @dow ORDER BY StartTime;
+    SELECT StartAt, EndAt FROM hms.Appointments
       WHERE TenantId = @tid AND DoctorId = @doc AND Status IN ('scheduled','checked_in') AND StartAt < @end AND EndAt > @start;`,
   { tid: req.ctx.tenantId, doc: doctorId, dow, start, end });
   const offset = tzOffsetMinutes(tz, start);
@@ -94,22 +94,22 @@ const bookingSchema = z.object({
  * for the same slot serialise and the second one sees the first.
  */
 async function assertBookable(tx, ctx, { doctorId, patientId, startAt, endAt, localDate, localTime, durationMinutes, excludeId = null }) {
-  const doctor = await tx.one(`SELECT StaffId, DepartmentId FROM dbo.StaffMembers WHERE TenantId = @tid AND StaffId = @doc AND StaffType = 'doctor' AND IsActive = 1`,
+  const doctor = await tx.one(`SELECT StaffId, DepartmentId FROM hms.StaffMembers WHERE TenantId = @tid AND StaffId = @doc AND StaffType = 'doctor' AND IsActive = 1`,
     { tid: ctx.tenantId, doc: doctorId });
   if (!doctor) throw badRequest('Doctor not found or inactive.');
-  const patient = await tx.one('SELECT PatientId FROM dbo.Patients WHERE TenantId = @tid AND PatientId = @pid AND IsArchived = 0', { tid: ctx.tenantId, pid: patientId });
+  const patient = await tx.one('SELECT PatientId FROM hms.Patients WHERE TenantId = @tid AND PatientId = @pid AND IsArchived = 0', { tid: ctx.tenantId, pid: patientId });
   if (!patient) throw badRequest('Patient not found.');
   if (startAt.getTime() < Date.now() - 5 * 60000) throw badRequest('Appointments cannot be booked in the past.');
 
   const dow = new Date(`${localDate}T00:00:00Z`).getUTCDay();
   const blocks = await tx.query(`SELECT CONVERT(CHAR(5), StartTime, 108) AS StartTime, CONVERT(CHAR(5), EndTime, 108) AS EndTime
-                                 FROM dbo.DoctorSchedules WHERE TenantId = @tid AND StaffId = @doc AND DayOfWeek = @dow`,
+                                 FROM hms.DoctorSchedules WHERE TenantId = @tid AND StaffId = @doc AND DayOfWeek = @dow`,
   { tid: ctx.tenantId, doc: doctorId, dow });
   if (!withinSchedule(blocks, localTime, durationMinutes)) throw conflict('The doctor is not available at that time.', 'OUTSIDE_SCHEDULE');
 
   const clash = await tx.one(`
     SELECT TOP 1 AppointmentNumber, CASE WHEN DoctorId = @doc THEN 'doctor' ELSE 'patient' END AS who
-    FROM dbo.Appointments WITH (UPDLOCK, HOLDLOCK)
+    FROM hms.Appointments WITH (UPDLOCK, HOLDLOCK)
     WHERE TenantId = @tid AND (DoctorId = @doc OR PatientId = @pid) AND Status IN ('scheduled','checked_in')
       AND StartAt < @end AND EndAt > @start AND (@exclude IS NULL OR AppointmentId <> @exclude)`,
   { tid: ctx.tenantId, doc: doctorId, pid: patientId, start: startAt, end: endAt, exclude: excludeId });
@@ -128,7 +128,7 @@ router.post('/', requirePermission('appointments.write'), validate(bookingSchema
     const doctor = await assertBookable(tx, req.ctx, { ...b, startAt, endAt, localDate: b.date, localTime: b.time });
     const n = await nextSequence(tx, req.ctx.tenantId, 'appointment');
     const row = await tx.one(`
-      INSERT INTO dbo.Appointments (TenantId, AppointmentNumber, PatientId, DoctorId, DepartmentId, StartAt, EndAt, VisitType, Reason, CreatedByUserId)
+      INSERT INTO hms.Appointments (TenantId, AppointmentNumber, PatientId, DoctorId, DepartmentId, StartAt, EndAt, VisitType, Reason, CreatedByUserId)
       OUTPUT INSERTED.AppointmentId, INSERTED.AppointmentNumber
       VALUES (@tid, @num, @pid, @doc, @dept, @start, @end, @vt, @reason, @uid)`,
     { tid: req.ctx.tenantId, num: formatNumber('APT', n), pid: b.patientId, doc: b.doctorId, dept: doctor.DepartmentId, start: startAt, end: endAt,
@@ -151,7 +151,7 @@ router.post('/:id/reschedule', requirePermission('appointments.write'),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
-      const cur = await tx.one('SELECT * FROM dbo.Appointments WITH (UPDLOCK) WHERE TenantId = @tid AND AppointmentId = @id', { tid: req.ctx.tenantId, id });
+      const cur = await tx.one('SELECT * FROM hms.Appointments WITH (UPDLOCK) WHERE TenantId = @tid AND AppointmentId = @id', { tid: req.ctx.tenantId, id });
       if (!cur) throw notFound('Appointment not found.');
       if (cur.Status !== 'scheduled') throw conflict('Only scheduled appointments can be rescheduled.');
       const duration = req.body.durationMinutes ?? Math.round((new Date(cur.EndAt) - new Date(cur.StartAt)) / 60000);
@@ -160,7 +160,7 @@ router.post('/:id/reschedule', requirePermission('appointments.write'),
       const endAt = new Date(startAt.getTime() + duration * 60000);
       const doctor = await assertBookable(tx, req.ctx, { doctorId, patientId: cur.PatientId, startAt, endAt, localDate: req.body.date,
         localTime: req.body.time, durationMinutes: duration, excludeId: id });
-      await tx.exec(`UPDATE dbo.Appointments SET StartAt = @start, EndAt = @end, DoctorId = @doc, DepartmentId = @dept, UpdatedAt = SYSUTCDATETIME()
+      await tx.exec(`UPDATE hms.Appointments SET StartAt = @start, EndAt = @end, DoctorId = @doc, DepartmentId = @dept, UpdatedAt = SYSUTCDATETIME()
                      WHERE TenantId = @tid AND AppointmentId = @id`,
       { tid: req.ctx.tenantId, id, start: startAt, end: endAt, doc: doctorId, dept: doctor.DepartmentId });
       await auditTenant(req, 'appointment.rescheduled', 'appointment', id, { from: new Date(cur.StartAt).toISOString(), to: startAt.toISOString() }, tx);
@@ -175,10 +175,10 @@ router.post('/:id/status', requirePermission('appointments.write'),
     const { status, cancelReason } = req.body;
     if (status === 'cancelled' && !cancelReason) throw badRequest('A cancellation reason is required.');
     await withTransaction(async (tx) => {
-      const cur = await tx.one('SELECT Status FROM dbo.Appointments WITH (UPDLOCK) WHERE TenantId = @tid AND AppointmentId = @id', { tid: req.ctx.tenantId, id });
+      const cur = await tx.one('SELECT Status FROM hms.Appointments WITH (UPDLOCK) WHERE TenantId = @tid AND AppointmentId = @id', { tid: req.ctx.tenantId, id });
       if (!cur) throw notFound('Appointment not found.');
       if (!canTransition(cur.Status, status)) throw conflict(`Cannot change an appointment from ${cur.Status} to ${status}.`, 'INVALID_TRANSITION');
-      await tx.exec(`UPDATE dbo.Appointments SET Status = @status, CancelReason = CASE WHEN @status = 'cancelled' THEN @reason ELSE CancelReason END,
+      await tx.exec(`UPDATE hms.Appointments SET Status = @status, CancelReason = CASE WHEN @status = 'cancelled' THEN @reason ELSE CancelReason END,
                        CheckedInAt = CASE WHEN @status = 'checked_in' THEN SYSUTCDATETIME() ELSE CheckedInAt END, UpdatedAt = SYSUTCDATETIME()
                      WHERE TenantId = @tid AND AppointmentId = @id`, { tid: req.ctx.tenantId, id, status, reason: cancelReason ?? null });
       await auditTenant(req, `appointment.${status}`, 'appointment', id, null, tx);

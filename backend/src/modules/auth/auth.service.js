@@ -40,7 +40,7 @@ export async function createSession({ subjectType, subjectId, tenantId = null, u
   const refreshToken = randomToken(48);
   const expiresAt = new Date(Date.now() + config.refreshTokenTtlDays * 86400000);
   await runner.exec(
-    `INSERT INTO dbo.UserSessions (SessionId, SubjectType, SubjectId, TenantId, RefreshTokenHash, ExpiresAt, UserAgent, IpAddress)
+    `INSERT INTO hms.UserSessions (SessionId, SubjectType, SubjectId, TenantId, RefreshTokenHash, ExpiresAt, UserAgent, IpAddress)
      VALUES (@sid, @type, @subject, @tid, @hash, @exp, @ua, @ip)`,
     { sid: sessionId, type: subjectType, subject: subjectId, tid: tenantId, hash: sha256Hex(refreshToken), exp: expiresAt, ua: userAgent?.slice(0, 300) ?? null, ip },
   );
@@ -58,11 +58,11 @@ export async function refreshSession(kind, refreshToken, meta) {
   return withTransaction(async (tx) => {
     const s = await tx.one(
       `SELECT SessionId, SubjectType, SubjectId, TenantId, ExpiresAt, RevokedAt
-       FROM dbo.UserSessions WITH (UPDLOCK, ROWLOCK) WHERE RefreshTokenHash = @hash`, { hash });
+       FROM hms.UserSessions WITH (UPDLOCK, ROWLOCK) WHERE RefreshTokenHash = @hash`, { hash });
     if (!s || s.SubjectType !== kind) throw unauthorized();
     if (s.RevokedAt) {
       // Token reuse → likely theft. Revoke every session of this subject.
-      await tx.exec(`UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME()
+      await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
                      WHERE SubjectType = @type AND SubjectId = @id AND RevokedAt IS NULL`, { type: s.SubjectType, id: s.SubjectId });
       await audit({ tenantId: s.TenantId, actorType: kind, actorId: s.SubjectId, action: 'auth.refresh_reuse_detected', ip: meta.ip }, tx);
       throw unauthorized('Session expired. Please sign in again.');
@@ -71,33 +71,33 @@ export async function refreshSession(kind, refreshToken, meta) {
 
     // Re-check that the subject is still allowed to have a session.
     if (kind === 'tenant') {
-      const ok = await tx.one(`SELECT 1 AS ok FROM dbo.Users u JOIN dbo.Tenants t ON t.TenantId = u.TenantId
+      const ok = await tx.one(`SELECT 1 AS ok FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
                                WHERE u.UserId = @id AND u.TenantId = @tid AND u.Status = 'active'
                                  AND t.Status IN ('active','suspended')`, { id: s.SubjectId, tid: s.TenantId });
       if (!ok) throw unauthorized();
     } else {
-      const ok = await tx.one(`SELECT 1 AS ok FROM dbo.PlatformUsers WHERE PlatformUserId = @id AND Status = 'active'`, { id: s.SubjectId });
+      const ok = await tx.one(`SELECT 1 AS ok FROM hms.PlatformUsers WHERE PlatformUserId = @id AND Status = 'active'`, { id: s.SubjectId });
       if (!ok) throw unauthorized();
     }
 
-    await tx.exec('UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME(), LastUsedAt = SYSUTCDATETIME() WHERE SessionId = @sid', { sid: s.SessionId });
+    await tx.exec('UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME(), LastUsedAt = SYSUTCDATETIME() WHERE SessionId = @sid', { sid: s.SessionId });
     return createSession({ subjectType: kind, subjectId: s.SubjectId, tenantId: s.TenantId, userAgent: meta.userAgent, ip: meta.ip }, tx);
   });
 }
 
 export async function revokeByRefreshToken(refreshToken) {
   if (!refreshToken) return;
-  await db.exec('UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE RefreshTokenHash = @hash AND RevokedAt IS NULL',
+  await db.exec('UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE RefreshTokenHash = @hash AND RevokedAt IS NULL',
     { hash: sha256Hex(refreshToken) });
 }
 
 export async function revokeSession(sessionId) {
-  await db.exec('UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE SessionId = @sid AND RevokedAt IS NULL', { sid: sessionId });
+  await db.exec('UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE SessionId = @sid AND RevokedAt IS NULL', { sid: sessionId });
 }
 
 async function registerFailure(table, idCol, id) {
   await db.exec(
-    `UPDATE dbo.${table}
+    `UPDATE hms.${table}
      SET FailedLoginCount = FailedLoginCount + 1,
          LockedUntil = CASE WHEN FailedLoginCount + 1 >= ${MAX_FAILED} THEN DATEADD(MINUTE, ${LOCK_MINUTES}, SYSUTCDATETIME()) ELSE LockedUntil END
      WHERE ${idCol} = @id`, { id });
@@ -111,7 +111,7 @@ export async function tenantLogin({ email, password, workspace }, { hostSlug, ip
   const slug = hostSlug || workspace || null;
   const candidates = await db.query(
     `SELECT u.UserId, u.TenantId, u.PasswordHash, u.Status, u.LockedUntil, t.Slug, t.Name AS TenantName, t.Status AS TenantStatus
-     FROM dbo.Users u JOIN dbo.Tenants t ON t.TenantId = u.TenantId
+     FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
      WHERE u.Email = @email AND (@slug IS NULL OR t.Slug = @slug)`,
     { email: email.toLowerCase(), slug },
   );
@@ -135,7 +135,7 @@ export async function tenantLogin({ email, password, workspace }, { hostSlug, ip
     throw new HttpError(403, 'TENANT_INACTIVE', 'This hospital workspace is not active.');
   }
 
-  await db.exec('UPDATE dbo.Users SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE UserId = @id AND TenantId = @tid',
+  await db.exec('UPDATE hms.Users SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE UserId = @id AND TenantId = @tid',
     { id: user.UserId, tid: user.TenantId });
   const session = await createSession({ subjectType: 'tenant', subjectId: user.UserId, tenantId: user.TenantId, userAgent, ip });
   await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.login', ip });
@@ -143,7 +143,7 @@ export async function tenantLogin({ email, password, workspace }, { hostSlug, ip
 }
 
 export async function platformLogin({ email, password }, { ip, userAgent }) {
-  const user = await db.one('SELECT PlatformUserId, PasswordHash, Status, LockedUntil FROM dbo.PlatformUsers WHERE Email = @email',
+  const user = await db.one('SELECT PlatformUserId, PasswordHash, Status, LockedUntil FROM hms.PlatformUsers WHERE Email = @email',
     { email: email.toLowerCase() });
   const valid = await verifyPassword(password, user?.PasswordHash);
   if (user?.LockedUntil && new Date(user.LockedUntil) > new Date()) {
@@ -154,7 +154,7 @@ export async function platformLogin({ email, password }, { ip, userAgent }) {
     await audit({ actorType: 'public', action: 'admin.login_failed', metadata: { email: email.toLowerCase() }, ip });
     throw unauthorized('Incorrect e-mail or password.');
   }
-  await db.exec('UPDATE dbo.PlatformUsers SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE PlatformUserId = @id',
+  await db.exec('UPDATE hms.PlatformUsers SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE PlatformUserId = @id',
     { id: user.PlatformUserId });
   const session = await createSession({ subjectType: 'platform', subjectId: user.PlatformUserId, userAgent, ip });
   await audit({ actorType: 'platform', actorId: user.PlatformUserId, action: 'admin.login', ip });
@@ -167,13 +167,13 @@ export async function platformLogin({ email, password }, { ip, userAgent }) {
  */
 export async function requestPasswordReset({ email, workspace }, { ip }) {
   const user = await db.one(
-    `SELECT TOP 1 u.UserId, u.TenantId FROM dbo.Users u JOIN dbo.Tenants t ON t.TenantId = u.TenantId
+    `SELECT TOP 1 u.UserId, u.TenantId FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
      WHERE u.Email = @email AND u.Status = 'active' AND (@slug IS NULL OR t.Slug = @slug)`,
     { email: email.toLowerCase(), slug: workspace || null });
   if (!user) return;
   const token = randomToken(32);
   await db.exec(
-    `INSERT INTO dbo.PasswordResetTokens (SubjectType, SubjectId, TokenHash, ExpiresAt)
+    `INSERT INTO hms.PasswordResetTokens (SubjectType, SubjectId, TokenHash, ExpiresAt)
      VALUES ('tenant', @id, @hash, DATEADD(MINUTE, ${RESET_TTL_MIN}, SYSUTCDATETIME()))`,
     { id: user.UserId, hash: sha256Hex(token) });
   await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.password_reset_requested', ip });
@@ -188,16 +188,16 @@ export async function resetPassword({ token, password }, { ip }) {
   const hash = await hashPassword(password);
   await withTransaction(async (tx) => {
     const row = await tx.one(
-      `SELECT TokenId, SubjectId FROM dbo.PasswordResetTokens WITH (UPDLOCK, ROWLOCK)
+      `SELECT TokenId, SubjectId FROM hms.PasswordResetTokens WITH (UPDLOCK, ROWLOCK)
        WHERE TokenHash = @h AND SubjectType = 'tenant' AND UsedAt IS NULL AND ExpiresAt > SYSUTCDATETIME()`,
       { h: sha256Hex(token) });
     if (!row) throw badRequest('This reset link is invalid or has expired.');
-    await tx.exec('UPDATE dbo.PasswordResetTokens SET UsedAt = SYSUTCDATETIME() WHERE TokenId = @id', { id: row.TokenId });
-    const u = await tx.one('SELECT TenantId FROM dbo.Users WHERE UserId = @id', { id: row.SubjectId });
-    await tx.exec('UPDATE dbo.Users SET PasswordHash = @hash, FailedLoginCount = 0, LockedUntil = NULL, UpdatedAt = SYSUTCDATETIME() WHERE UserId = @id',
+    await tx.exec('UPDATE hms.PasswordResetTokens SET UsedAt = SYSUTCDATETIME() WHERE TokenId = @id', { id: row.TokenId });
+    const u = await tx.one('SELECT TenantId FROM hms.Users WHERE UserId = @id', { id: row.SubjectId });
+    await tx.exec('UPDATE hms.Users SET PasswordHash = @hash, FailedLoginCount = 0, LockedUntil = NULL, UpdatedAt = SYSUTCDATETIME() WHERE UserId = @id',
       { hash, id: row.SubjectId });
     // Sign out everywhere after a reset.
-    await tx.exec(`UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME()
+    await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
                    WHERE SubjectType = 'tenant' AND SubjectId = @id AND RevokedAt IS NULL`, { id: row.SubjectId });
     await audit({ tenantId: u?.TenantId, actorType: 'tenant', actorId: row.SubjectId, action: 'auth.password_reset', ip }, tx);
   });

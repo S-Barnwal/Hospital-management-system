@@ -4,12 +4,12 @@
  */
 export async function nextSequence(tx, tenantId, key) {
   const row = await tx.one(
-    `UPDATE dbo.TenantSequences WITH (UPDLOCK, ROWLOCK)
+    `UPDATE hms.TenantSequences WITH (UPDLOCK, ROWLOCK)
      SET NextValue = NextValue + 1
      OUTPUT DELETED.NextValue AS value
      WHERE TenantId = @tid AND SequenceKey = @key`, { tid: tenantId, key });
   if (row) return Number(row.value);
-  await tx.exec('INSERT INTO dbo.TenantSequences (TenantId, SequenceKey, NextValue) VALUES (@tid, @key, 2)', { tid: tenantId, key });
+  await tx.exec('INSERT INTO hms.TenantSequences (TenantId, SequenceKey, NextValue) VALUES (@tid, @key, 2)', { tid: tenantId, key });
   return 1;
 }
 

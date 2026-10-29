@@ -5,9 +5,9 @@
    refuses cross-tenant links (e.g. Hospital A appointment -> Hospital B patient).
    ===================================================================== */
 
-CREATE TABLE dbo.Departments (
+CREATE TABLE hms.Departments (
     DepartmentId INT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Departments PRIMARY KEY,
-    TenantId     INT NOT NULL CONSTRAINT FK_Departments_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId     INT NOT NULL CONSTRAINT FK_Departments_Tenants REFERENCES hms.Tenants(TenantId),
     Name         NVARCHAR(120) NOT NULL,
     Description  NVARCHAR(300) NULL,
     IsActive     BIT NOT NULL CONSTRAINT DF_Departments_Active DEFAULT (1),
@@ -17,9 +17,9 @@ CREATE TABLE dbo.Departments (
 );
 
 /* Doctors, nurses and other staff. A staff member may optionally be linked to a login (Users). */
-CREATE TABLE dbo.StaffMembers (
+CREATE TABLE hms.StaffMembers (
     StaffId            BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_StaffMembers PRIMARY KEY,
-    TenantId           INT NOT NULL CONSTRAINT FK_StaffMembers_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId           INT NOT NULL CONSTRAINT FK_StaffMembers_Tenants REFERENCES hms.Tenants(TenantId),
     UserId             BIGINT NULL,
     DepartmentId       INT NULL,
     StaffType          NVARCHAR(30) NOT NULL,
@@ -34,15 +34,15 @@ CREATE TABLE dbo.StaffMembers (
     CreatedAt          DATETIME2(3) NOT NULL CONSTRAINT DF_StaffMembers_CreatedAt DEFAULT (SYSUTCDATETIME()),
     UpdatedAt          DATETIME2(3) NOT NULL CONSTRAINT DF_StaffMembers_UpdatedAt DEFAULT (SYSUTCDATETIME()),
     CONSTRAINT UQ_StaffMembers_Tenant_Id UNIQUE (TenantId, StaffId),
-    CONSTRAINT FK_StaffMembers_Departments FOREIGN KEY (TenantId, DepartmentId) REFERENCES dbo.Departments (TenantId, DepartmentId),
-    CONSTRAINT FK_StaffMembers_Users FOREIGN KEY (TenantId, UserId) REFERENCES dbo.Users (TenantId, UserId),
+    CONSTRAINT FK_StaffMembers_Departments FOREIGN KEY (TenantId, DepartmentId) REFERENCES hms.Departments (TenantId, DepartmentId),
+    CONSTRAINT FK_StaffMembers_Users FOREIGN KEY (TenantId, UserId) REFERENCES hms.Users (TenantId, UserId),
     CONSTRAINT CK_StaffMembers_Type CHECK (StaffType IN ('doctor','nurse','receptionist','lab_technician','pharmacist','accountant','admin','other')),
     CONSTRAINT CK_StaffMembers_Fee CHECK (ConsultationFee IS NULL OR ConsultationFee >= 0)
 );
-CREATE INDEX IX_StaffMembers_Tenant_Type ON dbo.StaffMembers (TenantId, StaffType, IsActive) INCLUDE (FullName, DepartmentId);
+CREATE INDEX IX_StaffMembers_Tenant_Type ON hms.StaffMembers (TenantId, StaffType, IsActive) INCLUDE (FullName, DepartmentId);
 
 /* Weekly availability. DayOfWeek: 0 = Sunday ... 6 = Saturday. Times are in the hospital's local timezone. */
-CREATE TABLE dbo.DoctorSchedules (
+CREATE TABLE hms.DoctorSchedules (
     ScheduleId  BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_DoctorSchedules PRIMARY KEY,
     TenantId    INT NOT NULL,
     StaffId     BIGINT NOT NULL,
@@ -50,16 +50,16 @@ CREATE TABLE dbo.DoctorSchedules (
     StartTime   TIME(0) NOT NULL,
     EndTime     TIME(0) NOT NULL,
     SlotMinutes SMALLINT NOT NULL CONSTRAINT DF_DoctorSchedules_Slot DEFAULT (15),
-    CONSTRAINT FK_DoctorSchedules_Staff FOREIGN KEY (TenantId, StaffId) REFERENCES dbo.StaffMembers (TenantId, StaffId) ON DELETE CASCADE,
+    CONSTRAINT FK_DoctorSchedules_Staff FOREIGN KEY (TenantId, StaffId) REFERENCES hms.StaffMembers (TenantId, StaffId) ON DELETE CASCADE,
     CONSTRAINT CK_DoctorSchedules_Day CHECK (DayOfWeek BETWEEN 0 AND 6),
     CONSTRAINT CK_DoctorSchedules_Time CHECK (EndTime > StartTime),
     CONSTRAINT CK_DoctorSchedules_Slot CHECK (SlotMinutes BETWEEN 5 AND 240)
 );
-CREATE INDEX IX_DoctorSchedules_Staff ON dbo.DoctorSchedules (TenantId, StaffId, DayOfWeek);
+CREATE INDEX IX_DoctorSchedules_Staff ON hms.DoctorSchedules (TenantId, StaffId, DayOfWeek);
 
-CREATE TABLE dbo.Patients (
+CREATE TABLE hms.Patients (
     PatientId             BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Patients PRIMARY KEY,
-    TenantId              INT NOT NULL CONSTRAINT FK_Patients_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId              INT NOT NULL CONSTRAINT FK_Patients_Tenants REFERENCES hms.Tenants(TenantId),
     PatientNumber         NVARCHAR(30) NOT NULL,         -- unique per hospital, e.g. GV-000123
     FirstName             NVARCHAR(100) NOT NULL,
     LastName              NVARCHAR(100) NULL,
@@ -81,13 +81,13 @@ CREATE TABLE dbo.Patients (
     CONSTRAINT UQ_Patients_Tenant_Id UNIQUE (TenantId, PatientId),
     CONSTRAINT CK_Patients_Gender CHECK (Gender IS NULL OR Gender IN ('male','female','other','unknown'))
 );
-CREATE INDEX IX_Patients_Tenant_Phone ON dbo.Patients (TenantId, Phone) WHERE Phone IS NOT NULL;
-CREATE INDEX IX_Patients_Tenant_Name ON dbo.Patients (TenantId, FirstName, LastName);
-CREATE INDEX IX_Patients_Tenant_Created ON dbo.Patients (TenantId, CreatedAt DESC) INCLUDE (IsArchived);
+CREATE INDEX IX_Patients_Tenant_Phone ON hms.Patients (TenantId, Phone) WHERE Phone IS NOT NULL;
+CREATE INDEX IX_Patients_Tenant_Name ON hms.Patients (TenantId, FirstName, LastName);
+CREATE INDEX IX_Patients_Tenant_Created ON hms.Patients (TenantId, CreatedAt DESC) INCLUDE (IsArchived);
 
-CREATE TABLE dbo.Appointments (
+CREATE TABLE hms.Appointments (
     AppointmentId     BIGINT IDENTITY(1,1) NOT NULL CONSTRAINT PK_Appointments PRIMARY KEY,
-    TenantId          INT NOT NULL CONSTRAINT FK_Appointments_Tenants REFERENCES dbo.Tenants(TenantId),
+    TenantId          INT NOT NULL CONSTRAINT FK_Appointments_Tenants REFERENCES hms.Tenants(TenantId),
     AppointmentNumber NVARCHAR(30) NOT NULL,
     PatientId         BIGINT NOT NULL,
     DoctorId          BIGINT NOT NULL,
@@ -104,14 +104,14 @@ CREATE TABLE dbo.Appointments (
     UpdatedAt         DATETIME2(3) NOT NULL CONSTRAINT DF_Appointments_UpdatedAt DEFAULT (SYSUTCDATETIME()),
     CONSTRAINT UQ_Appointments_Tenant_Number UNIQUE (TenantId, AppointmentNumber),
     CONSTRAINT UQ_Appointments_Tenant_Id UNIQUE (TenantId, AppointmentId),
-    CONSTRAINT FK_Appointments_Patients FOREIGN KEY (TenantId, PatientId) REFERENCES dbo.Patients (TenantId, PatientId),
-    CONSTRAINT FK_Appointments_Doctors  FOREIGN KEY (TenantId, DoctorId)  REFERENCES dbo.StaffMembers (TenantId, StaffId),
-    CONSTRAINT FK_Appointments_Departments FOREIGN KEY (TenantId, DepartmentId) REFERENCES dbo.Departments (TenantId, DepartmentId),
+    CONSTRAINT FK_Appointments_Patients FOREIGN KEY (TenantId, PatientId) REFERENCES hms.Patients (TenantId, PatientId),
+    CONSTRAINT FK_Appointments_Doctors  FOREIGN KEY (TenantId, DoctorId)  REFERENCES hms.StaffMembers (TenantId, StaffId),
+    CONSTRAINT FK_Appointments_Departments FOREIGN KEY (TenantId, DepartmentId) REFERENCES hms.Departments (TenantId, DepartmentId),
     CONSTRAINT CK_Appointments_Time CHECK (EndAt > StartAt),
     CONSTRAINT CK_Appointments_Status CHECK (Status IN ('scheduled','checked_in','completed','cancelled','no_show')),
     CONSTRAINT CK_Appointments_VisitType CHECK (VisitType IN ('opd','follow_up','teleconsult'))
 );
 /* Supports the overlap check (doctor + time window) and day views. */
-CREATE INDEX IX_Appointments_Doctor_Time ON dbo.Appointments (TenantId, DoctorId, StartAt, EndAt) INCLUDE (Status);
-CREATE INDEX IX_Appointments_Tenant_Time ON dbo.Appointments (TenantId, StartAt) INCLUDE (Status, DoctorId, PatientId);
-CREATE INDEX IX_Appointments_Patient ON dbo.Appointments (TenantId, PatientId, StartAt DESC);
+CREATE INDEX IX_Appointments_Doctor_Time ON hms.Appointments (TenantId, DoctorId, StartAt, EndAt) INCLUDE (Status);
+CREATE INDEX IX_Appointments_Tenant_Time ON hms.Appointments (TenantId, StartAt) INCLUDE (Status, DoctorId, PatientId);
+CREATE INDEX IX_Appointments_Patient ON hms.Appointments (TenantId, PatientId, StartAt DESC);

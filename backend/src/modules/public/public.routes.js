@@ -34,15 +34,15 @@ export function serialisePlan(p, features) {
 
 router.get('/plans', asyncHandler(async (_req, res) => {
   const [plans, features] = await db.many(`
-    SELECT * FROM dbo.Plans WHERE IsActive = 1 ORDER BY SortOrder, PlanId;
-    SELECT pf.PlanId, pf.FeatureKey, pf.Label, pf.IsIncluded FROM dbo.PlanFeatures pf
-      JOIN dbo.Plans p ON p.PlanId = pf.PlanId AND p.IsActive = 1 ORDER BY pf.SortOrder;`);
+    SELECT * FROM hms.Plans WHERE IsActive = 1 ORDER BY SortOrder, PlanId;
+    SELECT pf.PlanId, pf.FeatureKey, pf.Label, pf.IsIncluded FROM hms.PlanFeatures pf
+      JOIN hms.Plans p ON p.PlanId = pf.PlanId AND p.IsActive = 1 ORDER BY pf.SortOrder;`);
   res.set('Cache-Control', 'public, max-age=60');
   res.json({ data: plans.map((p) => serialisePlan(p, features)) });
 }));
 
 router.get('/site-settings', asyncHandler(async (_req, res) => {
-  const rows = await db.query(`SELECT SettingKey, SettingValue FROM dbo.PlatformSettings WHERE SettingKey LIKE 'contact.%' OR SettingKey LIKE 'brand.%'`);
+  const rows = await db.query(`SELECT SettingKey, SettingValue FROM hms.PlatformSettings WHERE SettingKey LIKE 'contact.%' OR SettingKey LIKE 'brand.%'`);
   res.json({ data: Object.fromEntries(rows.map((r) => [r.SettingKey, r.SettingValue])) });
 }));
 
@@ -66,7 +66,7 @@ const demoSchema = z.object({
 router.post('/demo-requests', formLimiter, validate(demoSchema), asyncHandler(async (req, res) => {
   const b = req.body;
   const row = await db.one(
-    `INSERT INTO dbo.DemoRequests (OrgName, ContactName, Email, Phone, City, FacilityType, ExpectedUsers, PreferredAt, Message, SourceIp)
+    `INSERT INTO hms.DemoRequests (OrgName, ContactName, Email, Phone, City, FacilityType, ExpectedUsers, PreferredAt, Message, SourceIp)
      OUTPUT INSERTED.DemoRequestId
      VALUES (@org, @name, @email, @phone, @city, @ftype, @users, @pref, @msg, @ip)`,
     { org: b.orgName, name: b.contactName, email: b.email, phone: b.phone, city: b.city ?? null, ftype: b.facilityType ?? null,
@@ -87,7 +87,7 @@ const contactSchema = z.object({
 router.post('/contact', formLimiter, validate(contactSchema), asyncHandler(async (req, res) => {
   const b = req.body;
   await db.exec(
-    `INSERT INTO dbo.ContactMessages (Name, Email, Phone, Subject, Message, SourceIp) VALUES (@n, @e, @p, @s, @m, @ip)`,
+    `INSERT INTO hms.ContactMessages (Name, Email, Phone, Subject, Message, SourceIp) VALUES (@n, @e, @p, @s, @m, @ip)`,
     { n: b.name, e: b.email, p: b.phone ?? null, s: b.subject ?? null, m: b.message, ip: req.ip });
   res.status(201).json({ data: { message: 'Thanks for reaching out. We will reply by e-mail.' } });
 }));

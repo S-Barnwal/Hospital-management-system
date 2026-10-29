@@ -57,7 +57,7 @@ const verifySchema = z.object({
  */
 router.post('/verify', checkoutLimiter, validate(verifySchema), asyncHandler(async (req, res) => {
   const { onboardingId, orderId, paymentId, signature } = req.body;
-  const pay = await db.one('SELECT Provider FROM dbo.Payments WHERE ProviderOrderId = @order AND OnboardingId = @oid',
+  const pay = await db.one('SELECT Provider FROM hms.Payments WHERE ProviderOrderId = @order AND OnboardingId = @oid',
     { order: orderId, oid: t.uuid(onboardingId) });
   if (!pay) throw notFound('Order not found for this onboarding request.');
   const provider = getProvider(pay.Provider);
@@ -71,7 +71,7 @@ router.post('/verify', checkoutLimiter, validate(verifySchema), asyncHandler(asy
   if (status.status === 'provisioned') {
     // Sign the new owner straight in.
     const owner = await db.one(
-      `SELECT u.UserId, u.TenantId FROM dbo.Users u JOIN dbo.OnboardingRequests o ON o.TenantId = u.TenantId
+      `SELECT u.UserId, u.TenantId FROM hms.Users u JOIN hms.OnboardingRequests o ON o.TenantId = u.TenantId
        WHERE o.OnboardingId = @oid AND u.IsOwner = 1 AND u.Email = o.OwnerEmail`, { oid: t.uuid(onboardingId) });
     if (owner) {
       const session = await createSession({ subjectType: 'tenant', subjectId: owner.UserId, tenantId: owner.TenantId, userAgent: req.get('user-agent'), ip: req.ip });
@@ -107,7 +107,7 @@ export default router;
 
 /**
  * Provider webhooks. Mounted with express.raw() so the signature is computed over the exact bytes received.
- * Idempotent: each provider event id is processed at most once (dbo.PaymentEvents), and finalisation itself
+ * Idempotent: each provider event id is processed at most once (hms.PaymentEvents), and finalisation itself
  * is idempotent per order.
  */
 export const webhookHandler = asyncHandler(async (req, res) => {

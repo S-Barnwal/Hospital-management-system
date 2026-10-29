@@ -20,8 +20,8 @@ getPool()
   .then(async (pool) => {
     console.log(`✓ Connected to SQL Server (${config.db.server} / ${config.db.database})`);
     const r = await pool.request().query(`SELECT
-      CASE WHEN OBJECT_ID('dbo.Plans', 'U') IS NULL THEN 0 ELSE 1 END AS migrated,
-      CASE WHEN OBJECT_ID('dbo.Permissions', 'U') IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM dbo.Permissions) END AS permissions`);
+      CASE WHEN OBJECT_ID('hms.Plans', 'U') IS NULL THEN 0 ELSE 1 END AS migrated,
+      CASE WHEN OBJECT_ID('hms.Permissions', 'U') IS NULL THEN 0 ELSE (SELECT COUNT(*) FROM hms.Permissions) END AS permissions`);
     const { migrated, permissions } = r.recordset[0];
     if (!migrated) console.error('✗ Tables not found. Run:  npm run db:migrate   then   npm run db:seed');
     else if (!permissions) console.error('✗ Permissions not seeded. Run:  npm run db:seed');

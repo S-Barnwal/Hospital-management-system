@@ -20,18 +20,18 @@ const like = (s) => (s ? `%${String(s).replace(/[%_[\]]/g, (m) => `[${m}]`)}%` :
 router.get('/overview', asyncHandler(async (_req, res) => {
   const [counts, recentTenants, expiring] = await db.many(`
     SELECT
-      (SELECT COUNT(*) FROM dbo.Tenants WHERE Status = 'active') AS activeTenants,
-      (SELECT COUNT(*) FROM dbo.Tenants WHERE Status = 'suspended') AS suspendedTenants,
-      (SELECT COUNT(*) FROM dbo.DemoRequests WHERE Status = 'new') AS newDemoRequests,
-      (SELECT COUNT(*) FROM dbo.ContactMessages WHERE Status = 'new') AS newContactMessages,
-      (SELECT COUNT(*) FROM dbo.Payments WHERE Status = 'paid' AND IsSandbox = 0
+      (SELECT COUNT(*) FROM hms.Tenants WHERE Status = 'active') AS activeTenants,
+      (SELECT COUNT(*) FROM hms.Tenants WHERE Status = 'suspended') AS suspendedTenants,
+      (SELECT COUNT(*) FROM hms.DemoRequests WHERE Status = 'new') AS newDemoRequests,
+      (SELECT COUNT(*) FROM hms.ContactMessages WHERE Status = 'new') AS newContactMessages,
+      (SELECT COUNT(*) FROM hms.Payments WHERE Status = 'paid' AND IsSandbox = 0
          AND PaidAt >= DATEFROMPARTS(YEAR(SYSUTCDATETIME()), MONTH(SYSUTCDATETIME()), 1)) AS paidThisMonth,
-      (SELECT ISNULL(SUM(Amount), 0) FROM dbo.Payments WHERE Status = 'paid' AND IsSandbox = 0
+      (SELECT ISNULL(SUM(Amount), 0) FROM hms.Payments WHERE Status = 'paid' AND IsSandbox = 0
          AND PaidAt >= DATEFROMPARTS(YEAR(SYSUTCDATETIME()), MONTH(SYSUTCDATETIME()), 1)) AS collectedThisMonth,
-      (SELECT COUNT(*) FROM dbo.Payments WHERE Status = 'paid' AND IsSandbox = 1) AS sandboxPayments;
-    SELECT TOP 5 TenantId, Slug, Name, Status, CreatedAt FROM dbo.Tenants ORDER BY CreatedAt DESC;
+      (SELECT COUNT(*) FROM hms.Payments WHERE Status = 'paid' AND IsSandbox = 1) AS sandboxPayments;
+    SELECT TOP 5 TenantId, Slug, Name, Status, CreatedAt FROM hms.Tenants ORDER BY CreatedAt DESC;
     SELECT TOP 10 t.TenantId, t.Name, t.Slug, s.CurrentPeriodEnd, s.Status
-      FROM dbo.Subscriptions s JOIN dbo.Tenants t ON t.TenantId = s.TenantId
+      FROM hms.Subscriptions s JOIN hms.Tenants t ON t.TenantId = s.TenantId
       WHERE s.CurrentPeriodEnd < DATEADD(DAY, 14, SYSUTCDATETIME()) AND s.Status IN ('active','past_due')
       ORDER BY s.CurrentPeriodEnd;`);
   res.json({ data: { counts: counts[0], recentTenants, expiring, note: 'Revenue excludes sandbox payments.' } });
@@ -45,27 +45,27 @@ router.get('/tenants', asyncHandler(async (req, res) => {
   const [rows, total] = await db.many(`
     SELECT t.TenantId, t.Slug, t.Name, t.Email, t.City, t.FacilityType, t.Status, t.CreatedAt,
            sub.PlanName, sub.Status AS SubStatus, sub.CurrentPeriodEnd
-    FROM dbo.Tenants t
-    OUTER APPLY (SELECT TOP 1 p.Name AS PlanName, s.Status, s.CurrentPeriodEnd FROM dbo.Subscriptions s
-                 JOIN dbo.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
+    FROM hms.Tenants t
+    OUTER APPLY (SELECT TOP 1 p.Name AS PlanName, s.Status, s.CurrentPeriodEnd FROM hms.Subscriptions s
+                 JOIN hms.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
     ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.Tenants t ${where};`, params);
+    SELECT COUNT(*) AS total FROM hms.Tenants t ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
 router.get('/tenants/:id', asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [tenant, subs, payments, usage, owners] = await db.many(`
-    SELECT TenantId, Slug, Name, Email, Phone, City, FacilityType, Status, Timezone, Currency, SuspendedReason, CreatedAt FROM dbo.Tenants WHERE TenantId = @id;
+    SELECT TenantId, Slug, Name, Email, Phone, City, FacilityType, Status, Timezone, Currency, SuspendedReason, CreatedAt FROM hms.Tenants WHERE TenantId = @id;
     SELECT s.SubscriptionId, p.Name AS PlanName, s.BillingInterval, s.Status, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.GraceDays
-      FROM dbo.Subscriptions s JOIN dbo.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = @id ORDER BY s.CurrentPeriodEnd DESC;
+      FROM hms.Subscriptions s JOIN hms.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = @id ORDER BY s.CurrentPeriodEnd DESC;
     SELECT p.PaymentId, p.Purpose, p.Provider, p.IsSandbox, p.Amount, p.Currency, p.Status, p.PaidAt, p.CreatedAt, i.InvoiceNumber
-      FROM dbo.Payments p LEFT JOIN dbo.Invoices i ON i.PaymentId = p.PaymentId WHERE p.TenantId = @id ORDER BY p.CreatedAt DESC;
-    SELECT (SELECT COUNT(*) FROM dbo.Users WHERE TenantId = @id AND Status = 'active') AS activeUsers,
-           (SELECT COUNT(*) FROM dbo.Patients WHERE TenantId = @id AND IsArchived = 0) AS patients,
-           (SELECT COUNT(*) FROM dbo.StaffMembers WHERE TenantId = @id AND IsActive = 1) AS staff,
-           (SELECT COUNT(*) FROM dbo.Appointments WHERE TenantId = @id) AS appointments;
-    SELECT FullName, Email FROM dbo.Users WHERE TenantId = @id AND IsOwner = 1;`, { id });
+      FROM hms.Payments p LEFT JOIN hms.Invoices i ON i.PaymentId = p.PaymentId WHERE p.TenantId = @id ORDER BY p.CreatedAt DESC;
+    SELECT (SELECT COUNT(*) FROM hms.Users WHERE TenantId = @id AND Status = 'active') AS activeUsers,
+           (SELECT COUNT(*) FROM hms.Patients WHERE TenantId = @id AND IsArchived = 0) AS patients,
+           (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @id AND IsActive = 1) AS staff,
+           (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @id) AS appointments;
+    SELECT FullName, Email FROM hms.Users WHERE TenantId = @id AND IsOwner = 1;`, { id });
   if (!tenant[0]) throw notFound('Tenant not found.');
   await auditPlatform(req, 'admin.tenant_viewed', 'tenant', id, null, id);
   res.json({ data: { ...tenant[0], subscriptions: subs, payments, usage: usage[0], owners } });
@@ -77,12 +77,12 @@ router.post('/tenants/:id/status', requireSuperAdmin,
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
       const n = await tx.exec(
-        `UPDATE dbo.Tenants SET Status = @status, SuspendedReason = CASE WHEN @status = 'active' THEN NULL ELSE @reason END, UpdatedAt = SYSUTCDATETIME()
+        `UPDATE hms.Tenants SET Status = @status, SuspendedReason = CASE WHEN @status = 'active' THEN NULL ELSE @reason END, UpdatedAt = SYSUTCDATETIME()
          WHERE TenantId = @id AND Status <> 'pending'`, { id, status: req.body.status, reason: req.body.reason });
       if (!n) throw notFound('Tenant not found or still pending.');
       if (req.body.status !== 'active') {
         // Sign everyone out of a suspended/deactivated tenant immediately.
-        await tx.exec(`UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE TenantId = @id AND RevokedAt IS NULL`, { id });
+        await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE TenantId = @id AND RevokedAt IS NULL`, { id });
       }
       await auditPlatform(req, `admin.tenant_${req.body.status}`, 'tenant', id, { reason: req.body.reason }, id, tx);
     });
@@ -92,8 +92,8 @@ router.post('/tenants/:id/status', requireSuperAdmin,
 // ---------- Plans ----------
 router.get('/plans', asyncHandler(async (_req, res) => {
   const [plans, features] = await db.many(`
-    SELECT * FROM dbo.Plans ORDER BY SortOrder, PlanId;
-    SELECT PlanId, FeatureKey, Label, IsIncluded FROM dbo.PlanFeatures ORDER BY SortOrder;`);
+    SELECT * FROM hms.Plans ORDER BY SortOrder, PlanId;
+    SELECT PlanId, FeatureKey, Label, IsIncluded FROM hms.PlanFeatures ORDER BY SortOrder;`);
   res.json({ data: plans.map((p) => ({ ...serialisePlan(p, features), id: p.PlanId, isActive: Boolean(p.IsActive), sortOrder: p.SortOrder,
     monthlyPrice: p.MonthlyPrice, annualPrice: p.AnnualPrice })) });
 }));
@@ -118,16 +118,16 @@ const planSchema = z.object({
 
 async function savePlan(tx, planId, b) {
   await tx.exec(
-    `UPDATE dbo.Plans SET Name = @name, Tagline = @tag, Description = @desc, MonthlyPrice = @mp, AnnualPrice = @ap, TaxRatePercent = @tax,
+    `UPDATE hms.Plans SET Name = @name, Tagline = @tag, Description = @desc, MonthlyPrice = @mp, AnnualPrice = @ap, TaxRatePercent = @tax,
        MaxStaffUsers = @staff, MaxBranches = @branches, IsContactSales = @cs, IsPopular = @pop, IsActive = @active, SortOrder = @sort, UpdatedAt = SYSUTCDATETIME()
      WHERE PlanId = @id`,
     { id: planId, name: b.name, tag: b.tagline ?? null, desc: b.description ?? null, mp: t.money(b.monthlyPrice), ap: t.money(b.annualPrice),
       tax: { type: sql.Decimal(5, 2), value: b.taxRatePercent }, staff: b.maxStaffUsers, branches: b.maxBranches,
       cs: b.contactSales, pop: b.popular, active: b.isActive, sort: b.sortOrder });
-  await tx.exec('DELETE FROM dbo.PlanFeatures WHERE PlanId = @id', { id: planId });
+  await tx.exec('DELETE FROM hms.PlanFeatures WHERE PlanId = @id', { id: planId });
   let i = 0;
   for (const f of b.features) {
-    await tx.exec('INSERT INTO dbo.PlanFeatures (PlanId, FeatureKey, Label, IsIncluded, SortOrder) VALUES (@id, @k, @l, @inc, @s)',
+    await tx.exec('INSERT INTO hms.PlanFeatures (PlanId, FeatureKey, Label, IsIncluded, SortOrder) VALUES (@id, @k, @l, @inc, @s)',
       { id: planId, k: f.key, l: f.label, inc: f.included, s: (i += 1) });
   }
 }
@@ -135,7 +135,7 @@ async function savePlan(tx, planId, b) {
 router.put('/plans/:id', requireSuperAdmin, validate(planSchema), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   await withTransaction(async (tx) => {
-    const exists = await tx.one('SELECT PlanId FROM dbo.Plans WHERE PlanId = @id', { id });
+    const exists = await tx.one('SELECT PlanId FROM hms.Plans WHERE PlanId = @id', { id });
     if (!exists) throw notFound('Plan not found.');
     await savePlan(tx, id, req.body);
     await auditPlatform(req, 'admin.plan_updated', 'plan', id, { name: req.body.name, monthly: req.body.monthlyPrice, annual: req.body.annualPrice }, null, tx);
@@ -150,7 +150,7 @@ router.post('/plans', requireSuperAdmin,
     const parsed = planSchema.safeParse(rest);
     if (!parsed.success) throw badRequest('Validation failed.', parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })));
     const id = await withTransaction(async (tx) => {
-      const row = await tx.one(`INSERT INTO dbo.Plans (Code, Name, IsContactSales) OUTPUT INSERTED.PlanId VALUES (@code, @name, 1)`, { code, name: parsed.data.name });
+      const row = await tx.one(`INSERT INTO hms.Plans (Code, Name, IsContactSales) OUTPUT INSERTED.PlanId VALUES (@code, @name, 1)`, { code, name: parsed.data.name });
       await savePlan(tx, row.PlanId, parsed.data);
       await auditPlatform(req, 'admin.plan_created', 'plan', row.PlanId, { code }, null, tx);
       return row.PlanId;
@@ -164,10 +164,10 @@ router.get('/subscriptions', asyncHandler(async (req, res) => {
   const params = { status: req.query.status || null, offset: lq.offset, size: lq.pageSize };
   const [rows, total] = await db.many(`
     SELECT s.SubscriptionId, t.TenantId, t.Name AS TenantName, t.Slug, p.Name AS PlanName, s.BillingInterval, s.Status, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.GraceDays
-    FROM dbo.Subscriptions s JOIN dbo.Tenants t ON t.TenantId = s.TenantId JOIN dbo.Plans p ON p.PlanId = s.PlanId
+    FROM hms.Subscriptions s JOIN hms.Tenants t ON t.TenantId = s.TenantId JOIN hms.Plans p ON p.PlanId = s.PlanId
     WHERE (@status IS NULL OR s.Status = @status)
     ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.Subscriptions s WHERE (@status IS NULL OR s.Status = @status);`, params);
+    SELECT COUNT(*) AS total FROM hms.Subscriptions s WHERE (@status IS NULL OR s.Status = @status);`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -177,13 +177,13 @@ router.get('/payments', asyncHandler(async (req, res) => {
   const [rows, total] = await db.many(`
     SELECT p.PaymentId, p.Purpose, p.Provider, p.IsSandbox, p.ProviderOrderId, p.ProviderPaymentId, p.Amount, p.Currency, p.Status, p.FailureReason,
            p.CreatedAt, p.PaidAt, t.Name AS TenantName, t.Slug, o.OrgName AS OnboardingOrg, i.InvoiceNumber
-    FROM dbo.Payments p
-    LEFT JOIN dbo.Tenants t ON t.TenantId = p.TenantId
-    LEFT JOIN dbo.OnboardingRequests o ON o.OnboardingId = p.OnboardingId
-    LEFT JOIN dbo.Invoices i ON i.PaymentId = p.PaymentId
+    FROM hms.Payments p
+    LEFT JOIN hms.Tenants t ON t.TenantId = p.TenantId
+    LEFT JOIN hms.OnboardingRequests o ON o.OnboardingId = p.OnboardingId
+    LEFT JOIN hms.Invoices i ON i.PaymentId = p.PaymentId
     WHERE (@status IS NULL OR p.Status = @status)
     ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.Payments p WHERE (@status IS NULL OR p.Status = @status);`, params);
+    SELECT COUNT(*) AS total FROM hms.Payments p WHERE (@status IS NULL OR p.Status = @status);`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -193,19 +193,19 @@ router.get('/demo-requests', asyncHandler(async (req, res) => {
   const params = { status: req.query.status || null, q: like(req.query.q), offset: lq.offset, size: lq.pageSize };
   const where = `WHERE (@status IS NULL OR d.Status = @status) AND (@q IS NULL OR d.OrgName LIKE @q OR d.ContactName LIKE @q OR d.Email LIKE @q OR d.City LIKE @q)`;
   const [rows, total] = await db.many(`
-    SELECT d.*, pu.FullName AS AssignedToName FROM dbo.DemoRequests d LEFT JOIN dbo.PlatformUsers pu ON pu.PlatformUserId = d.AssignedTo
+    SELECT d.*, pu.FullName AS AssignedToName FROM hms.DemoRequests d LEFT JOIN hms.PlatformUsers pu ON pu.PlatformUserId = d.AssignedTo
     ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.DemoRequests d ${where};`, params);
+    SELECT COUNT(*) AS total FROM hms.DemoRequests d ${where};`, params);
   res.json({ data: rows.map(({ SourceIp, ...r }) => r), meta: pageMeta(lq, total[0].total) });
 }));
 
 router.get('/demo-requests/:id', asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [rows, notes, admins] = await db.many(`
-    SELECT d.*, pu.FullName AS AssignedToName FROM dbo.DemoRequests d LEFT JOIN dbo.PlatformUsers pu ON pu.PlatformUserId = d.AssignedTo WHERE d.DemoRequestId = @id;
-    SELECT n.NoteId, n.Note, n.CreatedAt, pu.FullName AS Author FROM dbo.DemoRequestNotes n JOIN dbo.PlatformUsers pu ON pu.PlatformUserId = n.PlatformUserId
+    SELECT d.*, pu.FullName AS AssignedToName FROM hms.DemoRequests d LEFT JOIN hms.PlatformUsers pu ON pu.PlatformUserId = d.AssignedTo WHERE d.DemoRequestId = @id;
+    SELECT n.NoteId, n.Note, n.CreatedAt, pu.FullName AS Author FROM hms.DemoRequestNotes n JOIN hms.PlatformUsers pu ON pu.PlatformUserId = n.PlatformUserId
       WHERE n.DemoRequestId = @id ORDER BY n.CreatedAt DESC;
-    SELECT PlatformUserId, FullName FROM dbo.PlatformUsers WHERE Status = 'active' ORDER BY FullName;`, { id });
+    SELECT PlatformUserId, FullName FROM hms.PlatformUsers WHERE Status = 'active' ORDER BY FullName;`, { id });
   if (!rows[0]) throw notFound('Demo request not found.');
   const { SourceIp, ...demo } = rows[0];
   res.json({ data: { ...demo, notes, assignees: admins } });
@@ -221,13 +221,13 @@ router.patch('/demo-requests/:id',
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
       const n = await tx.exec(
-        `UPDATE dbo.DemoRequests SET Status = COALESCE(@status, Status),
+        `UPDATE hms.DemoRequests SET Status = COALESCE(@status, Status),
            AssignedTo = CASE WHEN @setAssignee = 1 THEN @assignee ELSE AssignedTo END, UpdatedAt = SYSUTCDATETIME()
          WHERE DemoRequestId = @id`,
         { id, status: req.body.status ?? null, setAssignee: 'assignedTo' in req.body, assignee: req.body.assignedTo ?? null });
       if (!n) throw notFound('Demo request not found.');
       if (req.body.note) {
-        await tx.exec('INSERT INTO dbo.DemoRequestNotes (DemoRequestId, PlatformUserId, Note) VALUES (@id, @uid, @note)',
+        await tx.exec('INSERT INTO hms.DemoRequestNotes (DemoRequestId, PlatformUserId, Note) VALUES (@id, @uid, @note)',
           { id, uid: req.admin.platformUserId, note: req.body.note });
       }
       await auditPlatform(req, 'admin.demo_request_updated', 'demo_request', id, { status: req.body.status, assignedTo: req.body.assignedTo }, null, tx);
@@ -238,9 +238,9 @@ router.patch('/demo-requests/:id',
 router.get('/contact-messages', asyncHandler(async (req, res) => {
   const lq = parseListQuery(req.query, { created: 'CreatedAt' }, 'created');
   const [rows, total] = await db.many(`
-    SELECT ContactMessageId, Name, Email, Phone, Subject, Message, Status, CreatedAt FROM dbo.ContactMessages
+    SELECT ContactMessageId, Name, Email, Phone, Subject, Message, Status, CreatedAt FROM hms.ContactMessages
     ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.ContactMessages;`, { offset: lq.offset, size: lq.pageSize });
+    SELECT COUNT(*) AS total FROM hms.ContactMessages;`, { offset: lq.offset, size: lq.pageSize });
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -257,16 +257,16 @@ router.get('/audit-logs', asyncHandler(async (req, res) => {
                  AND (@actorType IS NULL OR a.ActorType = @actorType) AND (@from IS NULL OR a.CreatedAt >= @from) AND (@to IS NULL OR a.CreatedAt < @to)`;
   const [rows, total] = await db.many(`
     SELECT a.AuditLogId, a.TenantId, t.Name AS TenantName, a.ActorType, a.ActorId, a.Action, a.EntityType, a.EntityId, a.Metadata, a.IpAddress, a.CreatedAt
-    FROM dbo.AuditLogs a LEFT JOIN dbo.Tenants t ON t.TenantId = a.TenantId
+    FROM hms.AuditLogs a LEFT JOIN hms.Tenants t ON t.TenantId = a.TenantId
     ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.AuditLogs a ${where};`, params);
+    SELECT COUNT(*) AS total FROM hms.AuditLogs a ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
 // ---------- Platform settings (public website contact details, brand) ----------
 const SETTING_KEYS = ['contact.email', 'contact.phone', 'contact.address', 'brand.name'];
 router.get('/settings', asyncHandler(async (_req, res) => {
-  const rows = await db.query('SELECT SettingKey, SettingValue FROM dbo.PlatformSettings');
+  const rows = await db.query('SELECT SettingKey, SettingValue FROM hms.PlatformSettings');
   res.json({ data: Object.fromEntries(rows.map((r) => [r.SettingKey, r.SettingValue])) });
 }));
 router.put('/settings', requireSuperAdmin,
@@ -274,7 +274,7 @@ router.put('/settings', requireSuperAdmin,
   asyncHandler(async (req, res) => {
     await withTransaction(async (tx) => {
       for (const [k, v] of Object.entries(req.body)) {
-        await tx.exec(`MERGE dbo.PlatformSettings AS tgt USING (SELECT @k AS SettingKey) AS src ON tgt.SettingKey = src.SettingKey
+        await tx.exec(`MERGE hms.PlatformSettings AS tgt USING (SELECT @k AS SettingKey) AS src ON tgt.SettingKey = src.SettingKey
                        WHEN MATCHED THEN UPDATE SET SettingValue = @v, UpdatedAt = SYSUTCDATETIME()
                        WHEN NOT MATCHED THEN INSERT (SettingKey, SettingValue) VALUES (@k, @v);`, { k, v });
       }

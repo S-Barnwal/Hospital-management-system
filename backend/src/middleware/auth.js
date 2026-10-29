@@ -23,21 +23,21 @@ export function resolveHostTenant(req, _res, next) {
 const CONTEXT_SQL = `
 SELECT u.UserId, u.Status AS UserStatus, u.IsOwner,
        t.TenantId, t.Slug, t.Name AS TenantName, t.Status AS TenantStatus, t.Timezone, t.Currency,
-       CASE WHEN EXISTS (SELECT 1 FROM dbo.UserSessions s
+       CASE WHEN EXISTS (SELECT 1 FROM hms.UserSessions s
                          WHERE s.SessionId = @sid AND s.SubjectType = 'tenant' AND s.SubjectId = u.UserId
                            AND s.TenantId = t.TenantId AND s.RevokedAt IS NULL AND s.ExpiresAt > SYSUTCDATETIME())
             THEN 1 ELSE 0 END AS SessionValid,
        sub.Status AS SubStatus, sub.CurrentPeriodEnd AS SubPeriodEnd, sub.GraceDays AS SubGraceDays,
-       (SELECT STRING_AGG(r.Code, ',') FROM dbo.UserRoles ur JOIN dbo.Roles r ON r.RoleId = ur.RoleId AND r.TenantId = ur.TenantId
+       (SELECT STRING_AGG(r.Code, ',') FROM hms.UserRoles ur JOIN hms.Roles r ON r.RoleId = ur.RoleId AND r.TenantId = ur.TenantId
          WHERE ur.TenantId = t.TenantId AND ur.UserId = u.UserId) AS Roles,
        (SELECT STRING_AGG(x.Code, ',') FROM (
-          SELECT DISTINCT p.Code FROM dbo.UserRoles ur
-          JOIN dbo.RolePermissions rp ON rp.RoleId = ur.RoleId
-          JOIN dbo.Permissions p ON p.PermissionId = rp.PermissionId
+          SELECT DISTINCT p.Code FROM hms.UserRoles ur
+          JOIN hms.RolePermissions rp ON rp.RoleId = ur.RoleId
+          JOIN hms.Permissions p ON p.PermissionId = rp.PermissionId
           WHERE ur.TenantId = t.TenantId AND ur.UserId = u.UserId) x) AS Permissions
-FROM dbo.Users u
-JOIN dbo.Tenants t ON t.TenantId = u.TenantId
-OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays FROM dbo.Subscriptions s
+FROM hms.Users u
+JOIN hms.Tenants t ON t.TenantId = u.TenantId
+OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays FROM hms.Subscriptions s
              WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
 WHERE u.UserId = @uid AND u.TenantId = @tid;`;
 
@@ -68,9 +68,9 @@ export async function requirePlatformAdmin(req, _res, next) {
     if (!payload || payload.typ !== 'platform') throw unauthorized();
     const row = await db.one(`
       SELECT pu.PlatformUserId, pu.Email, pu.FullName, pu.Role, pu.Status
-      FROM dbo.PlatformUsers pu
+      FROM hms.PlatformUsers pu
       WHERE pu.PlatformUserId = @id AND pu.Status = 'active'
-        AND EXISTS (SELECT 1 FROM dbo.UserSessions s WHERE s.SessionId = @sid AND s.SubjectType = 'platform'
+        AND EXISTS (SELECT 1 FROM hms.UserSessions s WHERE s.SessionId = @sid AND s.SubjectType = 'platform'
                     AND s.SubjectId = pu.PlatformUserId AND s.RevokedAt IS NULL AND s.ExpiresAt > SYSUTCDATETIME())`,
     { id: Number(payload.sub), sid: payload.sid });
     if (!row) throw unauthorized('Your session has ended. Please sign in again.');

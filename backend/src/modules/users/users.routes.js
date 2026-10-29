@@ -17,8 +17,8 @@ router.use(requireTenant);
 async function loadRoles(runner, tenantId, roleIds = null) {
   const rows = await runner.query(`
     SELECT r.RoleId, r.Code, r.Name, r.Description, r.IsSystem,
-           (SELECT STRING_AGG(p.Code, ',') FROM dbo.RolePermissions rp JOIN dbo.Permissions p ON p.PermissionId = rp.PermissionId WHERE rp.RoleId = r.RoleId) AS Perms
-    FROM dbo.Roles r WHERE r.TenantId = @tid ${roleIds ? 'AND r.RoleId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, \',\'))' : ''}
+           (SELECT STRING_AGG(p.Code, ',') FROM hms.RolePermissions rp JOIN hms.Permissions p ON p.PermissionId = rp.PermissionId WHERE rp.RoleId = r.RoleId) AS Perms
+    FROM hms.Roles r WHERE r.TenantId = @tid ${roleIds ? 'AND r.RoleId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, \',\'))' : ''}
     ORDER BY r.RoleId`, { tid: tenantId, ids: roleIds ? roleIds.join(',') : null });
   return rows.map((r) => ({ id: r.RoleId, code: r.Code, name: r.Name, description: r.Description, isSystem: Boolean(r.IsSystem),
     permissions: String(r.Perms || '').split(',').filter(Boolean) }));
@@ -46,10 +46,10 @@ router.put('/roles/:id/permissions', requirePermission('roles.manage'),
       if (!role) throw notFound('Role not found.');
       const problem = roleEditProblem({ actor: actorOf(req.ctx), role, newPerms: wanted });
       if (problem) throw forbidden(problem);
-      await tx.exec('DELETE FROM dbo.RolePermissions WHERE RoleId = @rid', { rid: id });
+      await tx.exec('DELETE FROM hms.RolePermissions WHERE RoleId = @rid', { rid: id });
       if (wanted.length) {
-        await tx.exec(`INSERT INTO dbo.RolePermissions (RoleId, PermissionId)
-                       SELECT @rid, PermissionId FROM dbo.Permissions WHERE Code IN (SELECT value FROM STRING_SPLIT(@codes, ','))`,
+        await tx.exec(`INSERT INTO hms.RolePermissions (RoleId, PermissionId)
+                       SELECT @rid, PermissionId FROM hms.Permissions WHERE Code IN (SELECT value FROM STRING_SPLIT(@codes, ','))`,
         { rid: id, codes: wanted.join(',') });
       }
       await auditTenant(req, 'role.permissions_updated', 'role', id, { role: role.code, count: wanted.length }, tx);
@@ -61,9 +61,9 @@ router.get('/', requirePermission('users.read'), asyncHandler(async (req, res) =
   const rows = await db.query(`
     SELECT u.UserId AS id, u.Email AS email, u.FullName AS fullName, u.Phone AS phone, u.Status AS status, u.IsOwner AS isOwner,
            u.LastLoginAt AS lastLoginAt, u.CreatedAt AS createdAt,
-           (SELECT STRING_AGG(CAST(r.RoleId AS NVARCHAR(10)) + ':' + r.Name, '|') FROM dbo.UserRoles ur JOIN dbo.Roles r ON r.RoleId = ur.RoleId AND r.TenantId = ur.TenantId
+           (SELECT STRING_AGG(CAST(r.RoleId AS NVARCHAR(10)) + ':' + r.Name, '|') FROM hms.UserRoles ur JOIN hms.Roles r ON r.RoleId = ur.RoleId AND r.TenantId = ur.TenantId
              WHERE ur.TenantId = u.TenantId AND ur.UserId = u.UserId) AS roles
-    FROM dbo.Users u WHERE u.TenantId = @tid ORDER BY u.IsOwner DESC, u.FullName`, { tid: req.ctx.tenantId });
+    FROM hms.Users u WHERE u.TenantId = @tid ORDER BY u.IsOwner DESC, u.FullName`, { tid: req.ctx.tenantId });
   res.json({
     data: rows.map((r) => ({ ...r, roles: String(r.roles || '').split('|').filter(Boolean).map((x) => {
       const i = x.indexOf(':');
@@ -87,8 +87,8 @@ router.post('/', requirePermission('users.manage'), validate(userSchema), asyncH
   const hash = await hashPassword(b.password);
   const id = await withTransaction(async (tx) => {
     const limit = await tx.one(`
-      SELECT TOP 1 p.MaxStaffUsers, (SELECT COUNT(*) FROM dbo.Users WITH (UPDLOCK) WHERE TenantId = @tid AND Status = 'active') AS active
-      FROM dbo.Subscriptions s JOIN dbo.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = @tid ORDER BY s.CurrentPeriodEnd DESC`, { tid: req.ctx.tenantId });
+      SELECT TOP 1 p.MaxStaffUsers, (SELECT COUNT(*) FROM hms.Users WITH (UPDLOCK) WHERE TenantId = @tid AND Status = 'active') AS active
+      FROM hms.Subscriptions s JOIN hms.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = @tid ORDER BY s.CurrentPeriodEnd DESC`, { tid: req.ctx.tenantId });
     if (limit?.MaxStaffUsers && limit.active >= limit.MaxStaffUsers) {
       throw forbidden(`Your plan allows ${limit.MaxStaffUsers} active users. Upgrade your plan to add more.`, 'PLAN_LIMIT');
     }
@@ -96,11 +96,11 @@ router.post('/', requirePermission('users.manage'), validate(userSchema), asyncH
     if (roles.length !== new Set(b.roleIds).size) throw badRequest('One or more roles are invalid.');
     const problem = assignmentProblem({ actor: actorOf(req.ctx), targetUserId: -1, targetIsOwner: false, roles });
     if (problem) throw forbidden(problem);
-    const row = await tx.one(`INSERT INTO dbo.Users (TenantId, Email, PasswordHash, FullName, Phone) OUTPUT INSERTED.UserId
+    const row = await tx.one(`INSERT INTO hms.Users (TenantId, Email, PasswordHash, FullName, Phone) OUTPUT INSERTED.UserId
                               VALUES (@tid, @email, @hash, @name, @phone)`,
     { tid: req.ctx.tenantId, email: b.email, hash, name: b.fullName, phone: b.phone ?? null });
     for (const r of roles) {
-      await tx.exec('INSERT INTO dbo.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @uid, @rid)', { tid: req.ctx.tenantId, uid: row.UserId, rid: r.id });
+      await tx.exec('INSERT INTO hms.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @uid, @rid)', { tid: req.ctx.tenantId, uid: row.UserId, rid: r.id });
     }
     await auditTenant(req, 'user.created', 'user', row.UserId, { roles: roles.map((r) => r.code).join(',') }, tx);
     return row.UserId;
@@ -118,7 +118,7 @@ router.patch('/:id', requirePermission('users.manage'),
     const id = idParam(req.params.id);
     const b = req.body;
     await withTransaction(async (tx) => {
-      const target = await tx.one('SELECT UserId, IsOwner FROM dbo.Users WITH (UPDLOCK) WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
+      const target = await tx.one('SELECT UserId, IsOwner FROM hms.Users WITH (UPDLOCK) WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
       if (!target) throw notFound('User not found.');
       if ((b.status || b.roleIds) && id === req.ctx.userId) throw forbidden('You cannot change your own status or roles.');
       if (target.IsOwner && b.status === 'disabled') throw forbidden('The owner account cannot be disabled.');
@@ -128,13 +128,13 @@ router.patch('/:id', requirePermission('users.manage'),
         const problem = assignmentProblem({ actor: actorOf(req.ctx), targetUserId: id, targetIsOwner: Boolean(target.IsOwner), roles });
         if (problem) throw forbidden(problem);
         if (target.IsOwner && !roles.some((r) => r.code === 'owner')) throw forbidden('The owner must keep the Owner role.');
-        await tx.exec('DELETE FROM dbo.UserRoles WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
-        for (const r of roles) await tx.exec('INSERT INTO dbo.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @id, @rid)', { tid: req.ctx.tenantId, id, rid: r.id });
+        await tx.exec('DELETE FROM hms.UserRoles WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
+        for (const r of roles) await tx.exec('INSERT INTO hms.UserRoles (TenantId, UserId, RoleId) VALUES (@tid, @id, @rid)', { tid: req.ctx.tenantId, id, rid: r.id });
       }
-      await tx.exec(`UPDATE dbo.Users SET FullName = COALESCE(@name, FullName), Status = COALESCE(@status, Status), UpdatedAt = SYSUTCDATETIME()
+      await tx.exec(`UPDATE hms.Users SET FullName = COALESCE(@name, FullName), Status = COALESCE(@status, Status), UpdatedAt = SYSUTCDATETIME()
                      WHERE TenantId = @tid AND UserId = @id`, { tid: req.ctx.tenantId, id, name: b.fullName ?? null, status: b.status ?? null });
       if (b.status === 'disabled') {
-        await tx.exec(`UPDATE dbo.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE SubjectType = 'tenant' AND SubjectId = @id AND TenantId = @tid AND RevokedAt IS NULL`,
+        await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE SubjectType = 'tenant' AND SubjectId = @id AND TenantId = @tid AND RevokedAt IS NULL`,
           { tid: req.ctx.tenantId, id });
       }
       await auditTenant(req, 'user.updated', 'user', id, { status: b.status, roles: b.roleIds?.join(',') }, tx);

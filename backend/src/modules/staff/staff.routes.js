@@ -19,15 +19,15 @@ const opt = (schema) => schema.nullable().optional().or(z.literal('').transform(
 router.get('/departments', requirePermission('staff.read'), asyncHandler(async (req, res) => {
   const rows = await db.query(`
     SELECT d.DepartmentId AS id, d.Name AS name, d.Description AS description, d.IsActive AS isActive,
-           (SELECT COUNT(*) FROM dbo.StaffMembers s WHERE s.TenantId = d.TenantId AND s.DepartmentId = d.DepartmentId AND s.IsActive = 1) AS staffCount
-    FROM dbo.Departments d WHERE d.TenantId = @tid ORDER BY d.Name`, { tid: req.ctx.tenantId });
+           (SELECT COUNT(*) FROM hms.StaffMembers s WHERE s.TenantId = d.TenantId AND s.DepartmentId = d.DepartmentId AND s.IsActive = 1) AS staffCount
+    FROM hms.Departments d WHERE d.TenantId = @tid ORDER BY d.Name`, { tid: req.ctx.tenantId });
   res.json({ data: rows });
 }));
 
 const deptSchema = z.object({ name: z.string().trim().min(2).max(120), description: opt(z.string().trim().max(300)), isActive: z.boolean().optional() }).strict();
 
 router.post('/departments', requirePermission('departments.manage'), validate(deptSchema), asyncHandler(async (req, res) => {
-  const row = await db.one('INSERT INTO dbo.Departments (TenantId, Name, Description) OUTPUT INSERTED.DepartmentId VALUES (@tid, @name, @desc)',
+  const row = await db.one('INSERT INTO hms.Departments (TenantId, Name, Description) OUTPUT INSERTED.DepartmentId VALUES (@tid, @name, @desc)',
     { tid: req.ctx.tenantId, name: req.body.name, desc: req.body.description ?? null });
   await auditTenant(req, 'department.created', 'department', row.DepartmentId, { name: req.body.name });
   res.status(201).json({ data: { id: row.DepartmentId } });
@@ -35,7 +35,7 @@ router.post('/departments', requirePermission('departments.manage'), validate(de
 
 router.patch('/departments/:id', requirePermission('departments.manage'), validate(deptSchema.partial().strict()), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
-  const n = await db.exec(`UPDATE dbo.Departments SET Name = COALESCE(@name, Name), Description = CASE WHEN @setDesc = 1 THEN @desc ELSE Description END,
+  const n = await db.exec(`UPDATE hms.Departments SET Name = COALESCE(@name, Name), Description = CASE WHEN @setDesc = 1 THEN @desc ELSE Description END,
                              IsActive = COALESCE(@active, IsActive) WHERE TenantId = @tid AND DepartmentId = @id`,
   { tid: req.ctx.tenantId, id, name: req.body.name ?? null, setDesc: 'description' in req.body, desc: req.body.description ?? null, active: req.body.isActive ?? null });
   if (!n) throw notFound('Department not found.');
@@ -61,9 +61,9 @@ router.get('/staff', requirePermission('staff.read'), asyncHandler(async (req, r
   const where = `WHERE s.TenantId = @tid AND (@type IS NULL OR s.StaffType = @type) AND (@nonDoctor = 0 OR s.StaffType <> 'doctor') AND (@dept IS NULL OR s.DepartmentId = @dept)
     AND (@active IS NULL OR s.IsActive = @active) AND (@q IS NULL OR s.FullName LIKE @q OR s.Specialization LIKE @q OR s.Phone LIKE @q)`;
   const [rows, total] = await db.many(`
-    SELECT ${STAFF_COLS} FROM dbo.StaffMembers s LEFT JOIN dbo.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
+    SELECT ${STAFF_COLS} FROM hms.StaffMembers s LEFT JOIN hms.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
     ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
-    SELECT COUNT(*) AS total FROM dbo.StaffMembers s ${where};`, params);
+    SELECT COUNT(*) AS total FROM hms.StaffMembers s ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
 }));
 
@@ -82,7 +82,7 @@ const staffSchema = z.object({
 
 async function assertDepartment(runner, tenantId, departmentId) {
   if (!departmentId) return;
-  const d = await runner.one('SELECT 1 AS ok FROM dbo.Departments WHERE TenantId = @tid AND DepartmentId = @id', { tid: tenantId, id: departmentId });
+  const d = await runner.one('SELECT 1 AS ok FROM hms.Departments WHERE TenantId = @tid AND DepartmentId = @id', { tid: tenantId, id: departmentId });
   if (!d) throw badRequest('Department not found.');
 }
 
@@ -90,7 +90,7 @@ router.post('/staff', requirePermission('staff.write'), validate(staffSchema), a
   const b = req.body;
   await assertDepartment(db, req.ctx.tenantId, b.departmentId);
   const row = await db.one(`
-    INSERT INTO dbo.StaffMembers (TenantId, StaffType, FullName, DepartmentId, Designation, Specialization, RegistrationNumber, Phone, Email, ConsultationFee)
+    INSERT INTO hms.StaffMembers (TenantId, StaffType, FullName, DepartmentId, Designation, Specialization, RegistrationNumber, Phone, Email, ConsultationFee)
     OUTPUT INSERTED.StaffId VALUES (@tid, @type, @name, @dept, @desig, @spec, @reg, @phone, @email, @fee)`,
   { tid: req.ctx.tenantId, type: b.staffType, name: b.fullName, dept: b.departmentId ?? null, desig: b.designation ?? null, spec: b.specialization ?? null,
     reg: b.registrationNumber ?? null, phone: b.phone ?? null, email: b.email ?? null, fee: b.consultationFee == null ? null : t.money(b.consultationFee) });
@@ -101,10 +101,10 @@ router.post('/staff', requirePermission('staff.write'), validate(staffSchema), a
 router.get('/staff/:id', requirePermission('staff.read'), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [rows, schedule] = await db.many(`
-    SELECT ${STAFF_COLS} FROM dbo.StaffMembers s LEFT JOIN dbo.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
+    SELECT ${STAFF_COLS} FROM hms.StaffMembers s LEFT JOIN hms.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
       WHERE s.TenantId = @tid AND s.StaffId = @id;
     SELECT ScheduleId AS id, DayOfWeek AS dayOfWeek, CONVERT(CHAR(5), StartTime, 108) AS startTime, CONVERT(CHAR(5), EndTime, 108) AS endTime, SlotMinutes AS slotMinutes
-      FROM dbo.DoctorSchedules WHERE TenantId = @tid AND StaffId = @id ORDER BY DayOfWeek, StartTime;`, { tid: req.ctx.tenantId, id });
+      FROM hms.DoctorSchedules WHERE TenantId = @tid AND StaffId = @id ORDER BY DayOfWeek, StartTime;`, { tid: req.ctx.tenantId, id });
   if (!rows[0]) throw notFound('Staff member not found.');
   res.json({ data: { ...rows[0], schedule } });
 }));
@@ -112,13 +112,13 @@ router.get('/staff/:id', requirePermission('staff.read'), asyncHandler(async (re
 router.patch('/staff/:id', requirePermission('staff.write'), validate(staffSchema.partial().strict()), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   await withTransaction(async (tx) => {
-    const cur = await tx.one(`SELECT ${STAFF_COLS} FROM dbo.StaffMembers s WITH (UPDLOCK) LEFT JOIN dbo.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
+    const cur = await tx.one(`SELECT ${STAFF_COLS} FROM hms.StaffMembers s WITH (UPDLOCK) LEFT JOIN hms.Departments d ON d.TenantId = s.TenantId AND d.DepartmentId = s.DepartmentId
                               WHERE s.TenantId = @tid AND s.StaffId = @id`, { tid: req.ctx.tenantId, id });
     if (!cur) throw notFound('Staff member not found.');
     const m = { ...cur, ...req.body };
     await assertDepartment(tx, req.ctx.tenantId, m.departmentId);
     await tx.exec(`
-      UPDATE dbo.StaffMembers SET StaffType = @type, FullName = @name, DepartmentId = @dept, Designation = @desig, Specialization = @spec,
+      UPDATE hms.StaffMembers SET StaffType = @type, FullName = @name, DepartmentId = @dept, Designation = @desig, Specialization = @spec,
         RegistrationNumber = @reg, Phone = @phone, Email = @email, ConsultationFee = @fee, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
       WHERE TenantId = @tid AND StaffId = @id`,
     { tid: req.ctx.tenantId, id, type: m.staffType, name: m.fullName, dept: m.departmentId ?? null, desig: m.designation ?? null, spec: m.specialization ?? null,
@@ -147,11 +147,11 @@ router.put('/staff/:id/schedule', requirePermission('staff.write'),
       }
     }
     await withTransaction(async (tx) => {
-      const doc = await tx.one(`SELECT StaffId FROM dbo.StaffMembers WHERE TenantId = @tid AND StaffId = @id AND StaffType = 'doctor'`, { tid: req.ctx.tenantId, id });
+      const doc = await tx.one(`SELECT StaffId FROM hms.StaffMembers WHERE TenantId = @tid AND StaffId = @id AND StaffType = 'doctor'`, { tid: req.ctx.tenantId, id });
       if (!doc) throw notFound('Doctor not found.');
-      await tx.exec('DELETE FROM dbo.DoctorSchedules WHERE TenantId = @tid AND StaffId = @id', { tid: req.ctx.tenantId, id });
+      await tx.exec('DELETE FROM hms.DoctorSchedules WHERE TenantId = @tid AND StaffId = @id', { tid: req.ctx.tenantId, id });
       for (const b of blocks) {
-        await tx.exec(`INSERT INTO dbo.DoctorSchedules (TenantId, StaffId, DayOfWeek, StartTime, EndTime, SlotMinutes)
+        await tx.exec(`INSERT INTO hms.DoctorSchedules (TenantId, StaffId, DayOfWeek, StartTime, EndTime, SlotMinutes)
                        VALUES (@tid, @id, @dow, CAST(@st AS TIME), CAST(@et AS TIME), @slot)`,
         { tid: req.ctx.tenantId, id, dow: b.dayOfWeek, st: `${b.startTime}:00`, et: `${b.endTime}:00`, slot: b.slotMinutes });
       }
