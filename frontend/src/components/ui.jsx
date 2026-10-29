@@ -178,7 +178,7 @@ export function Pagination({ meta, onPage }) {
 export function DataTable({ columns, rows, loading, error, empty, onRowClick, rowKey = 'id' }) {
   if (error) return <div className="p-4"><Alert tone="error">{error.message}</Alert></div>;
   return (
-    <div className="overflow-x-auto">
+    <div className="relative overflow-x-auto">
       <table className="table-base">
         <thead className="bg-forest-50/40"><tr>{columns.map((c) => <th key={c.key} scope="col" className={c.className}>{c.label}</th>)}</tr></thead>
         <tbody className="divide-y divide-line bg-white">

@@ -52,3 +52,23 @@ X-Requested-With: fetch
 → 201 {"data":{"id":88,"number":"APT-000088"}}
 → 409 {"error":{"code":"SLOT_TAKEN","message":"The doctor already has appointment APT-000087 at that time."}}
 ```
+
+## Clinical & finance modules (plan-gated)
+All require a hospital session, the module in the plan (`FEATURE_NOT_IN_PLAN` otherwise) and the listed permission.
+
+| Method & path | Permission |
+|---|---|
+| GET/POST `/opd/consultations`, GET/PUT/DELETE `/opd/consultations/:id`, POST `/opd/consultations/:id/finalize` | opd.read / opd.write |
+| GET/POST/PATCH/DELETE `/ipd/wards[/:id]`, POST `/ipd/wards/:id/beds`, PATCH/DELETE `/ipd/beds/:id` | ipd.read / ipd.configure |
+| GET/POST `/ipd/admissions`, GET `/ipd/admissions/:id`, POST `/ipd/admissions/:id/transfer`, `/discharge` | ipd.read / ipd.write |
+| GET/POST `/billing/bills`, GET/PATCH `/billing/bills/:id`, POST/DELETE `/billing/bills/:id/items[/:itemId]`, POST `/finalize`, `/payments`, `/cancel` | billing.read / billing.write |
+| POST `/billing/bills/:id/refunds` | billing.refund |
+| GET/POST/PUT/DELETE `/lab/tests[/:id]` | lab.read / lab.configure |
+| GET/POST `/lab/orders`, GET `/lab/orders/:id`, POST `/status`, PUT `/results` | lab.read / lab.write |
+| POST `/lab/orders/:id/verify` | lab.verify |
+| GET/POST/PUT/DELETE `/pharmacy/medicines[/:id]`, `/pharmacy/suppliers[/:id]`, POST `/pharmacy/stock/adjust` | pharmacy.read / pharmacy.configure |
+| POST `/pharmacy/stock/receive`, `/pharmacy/dispense`; GET `/pharmacy/alerts` | pharmacy.write / pharmacy.read |
+| GET `/reports/summary`, GET `/reports/:key` (`.csv` for export) | reports.read / reports.export |
+| DELETE `/hr/staff/:id`, `/hr/departments/:id`, `/users/:id`, `/admin/plans/:id`, `/admin/demo-requests/:id` | staff.write / departments.manage / users.manage / super_admin |
+
+Deletion rules: master data (departments, beds, wards, tests, medicines, suppliers, unused staff/plans) can be deleted only when unused, otherwise `409 IN_USE` with advice to deactivate. Patients are archived, appointments/lab orders/bills are cancelled, finalised consultations and invoices are permanent.

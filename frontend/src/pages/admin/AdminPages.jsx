@@ -4,6 +4,7 @@ import { LuBuilding2, LuCalendarCheck, LuCreditCard, LuMessageSquare, LuArrowLef
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useAdminAuth } from '../../context/AuthContext.jsx';
+import { notify, withToast } from '../../lib/toast.js';
 import { date, dateTime, money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatCard, StatusBadge, Textarea } from '../../components/ui.jsx';
 
@@ -93,7 +94,7 @@ export function TenantDetail() {
   if (loading || !t) return <Skeleton className="h-64 w-full" />;
   const apply = async () => {
     setErr(null);
-    try { await api.post(`/admin/tenants/${id}/status`, { status: action, reason }); setAction(null); setReason(''); reload(); } catch (e) { setErr(e.message); }
+    try { await api.post(`/admin/tenants/${id}/status`, { status: action, reason }); notify.success(action === 'active' ? 'Hospital reactivated.' : 'Hospital suspended and users signed out.'); setAction(null); setReason(''); reload(); } catch (e) { setErr(e.message); }
   };
   return (
     <>
@@ -155,6 +156,7 @@ function PlanEditor({ plan, onClose, onSaved }) {
       taxRatePercent: Number(v.taxRatePercent), maxStaffUsers: n(v.maxStaffUsers), maxBranches: n(v.maxBranches), contactSales: Boolean(v.contactSales),
       popular: Boolean(v.popular), isActive: Boolean(v.isActive), sortOrder: Number(v.sortOrder), features,
     });
+    notify.success('Plan saved.');
     onSaved();
   });
   if (!plan || !f.values) return null;
@@ -208,7 +210,12 @@ export function Plans() {
             <p className="mt-1 text-sm text-muted">{p.tagline}</p>
             <p className="mt-4 text-sm">{p.contactSales ? 'Contact sales' : <>{money(p.monthlyPrice)} / mo · {money(p.annualPrice)} / yr <span className="text-muted">+{p.taxRatePercent}% tax</span></>}</p>
             <p className="mt-1 text-xs text-muted">Users: {p.limits.staffUsers ?? 'unlimited'} · Branches: {p.limits.branches ?? 'unlimited'}</p>
-            {admin.role === 'super_admin' && <Button variant="outline" size="sm" className="mt-4" onClick={() => setEditing(p)}>Edit plan</Button>}
+            {admin.role === 'super_admin' && (
+              <div className="mt-4 flex gap-2">
+                <Button variant="outline" size="sm" onClick={() => setEditing(p)}>Edit plan</Button>
+                <Button variant="ghost" size="sm" onClick={async () => { if (window.confirm(`Delete plan ${p.name}? Only possible if nobody has bought it.`) && (await withToast(() => api.del(`/admin/plans/${p.id}`), 'Plan deleted.'))) reload(); }}>Delete</Button>
+              </div>
+            )}
           </Card>
         ))}
       </div>
@@ -259,12 +266,13 @@ export function Payments() {
 }
 
 function DemoDetail({ id, onClose, onSaved }) {
+  const { admin } = useAdminAuth();
   const { data, loading, reload } = useApi(() => (id ? api.get(`/admin/demo-requests/${id}`) : Promise.resolve({ data: null })), [id]);
   const [note, setNote] = useState('');
   const [err, setErr] = useState(null);
   const patch = async (body) => {
     setErr(null);
-    try { await api.patch(`/admin/demo-requests/${id}`, body); setNote(''); reload(); onSaved(); } catch (e) { setErr(e.message); }
+    try { await api.patch(`/admin/demo-requests/${id}`, body); notify.success('Demo request updated.'); setNote(''); reload(); onSaved(); } catch (e) { setErr(e.message); }
   };
   return (
     <Modal open={Boolean(id)} onClose={onClose} title={data ? data.OrgName : 'Demo request'} size="lg">
@@ -285,6 +293,7 @@ function DemoDetail({ id, onClose, onSaved }) {
             <Button className="mt-2" size="sm" disabled={!note.trim()} onClick={() => patch({ note: note.trim() })}>Add note</Button>
           </div>
           {err && <Alert tone="error">{err}</Alert>}
+          {admin?.role === 'super_admin' && <Button variant="ghost" size="sm" onClick={async () => { if (window.confirm('Delete this demo request permanently?') && (await withToast(() => api.del(`/admin/demo-requests/${id}`), 'Demo request deleted.'))) { onSaved(); onClose(); } }}>Delete request</Button>}
           <ul className="space-y-2">
             {data.notes.map((n) => <li key={n.NoteId} className="rounded-lg border border-line p-3 text-sm"><p>{n.Note}</p><p className="mt-1 text-xs text-muted">{n.Author} · {dateTime(n.CreatedAt)}</p></li>)}
           </ul>
@@ -369,7 +378,7 @@ export function AdminSettings() {
   const f = useForm({ 'brand.name': '', 'contact.email': '', 'contact.phone': '', 'contact.address': '' });
   const [saved, setSaved] = useState(false);
   useEffect(() => { if (data) f.setValues((s) => ({ ...s, ...data })); /* eslint-disable-next-line */ }, [data]);
-  const save = f.submit(async (v) => { setSaved(false); await api.put('/admin/settings', v); setSaved(true); });
+  const save = f.submit(async (v) => { setSaved(false); await api.put('/admin/settings', v); setSaved(true); notify.success('Website settings saved.'); });
   return (
     <>
       <PageHeader title="Website settings" subtitle="Contact details shown on the public website footer and Contact page." />

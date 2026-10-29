@@ -4,10 +4,30 @@ import { config } from '../config/env.js';
 
 let poolPromise = null;
 
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+/** Connects with retries — hosted SQL Servers over the internet can be slow to accept the first connection. */
+async function connectWithRetry(attempts = 3) {
+  let lastErr;
+  for (let i = 1; i <= attempts; i += 1) {
+    const pool = new sql.ConnectionPool(config.db);
+    try {
+      return await pool.connect();
+    } catch (err) {
+      lastErr = err;
+      await pool.close().catch(() => {});
+      if (i < attempts) {
+        console.warn(`SQL Server connection attempt ${i}/${attempts} failed (${err.code || ''} ${err.message}). Retrying…`);
+        await sleep(2000 * i);
+      }
+    }
+  }
+  throw lastErr;
+}
+
 export function getPool() {
   if (!poolPromise) {
-    const pool = new sql.ConnectionPool(config.db);
-    poolPromise = pool.connect().catch((err) => {
+    poolPromise = connectWithRetry().catch((err) => {
       poolPromise = null; // allow retry on next call
       throw err;
     });
@@ -28,6 +48,7 @@ export const t = {
   int: (v) => ({ type: sql.Int, value: v }),
   bigint: (v) => ({ type: sql.BigInt, value: v }),
   money: (v) => ({ type: sql.Decimal(12, 2), value: v }),
+  dec: (v, precision = 12, scale = 2) => ({ type: sql.Decimal(precision, scale), value: v }),
   date: (v) => ({ type: sql.Date, value: v }),
   time: (v) => ({ type: sql.VarChar(8), value: v }), // 'HH:MM:SS', cast in SQL
   datetime: (v) => ({ type: sql.DateTime2(3), value: v }),

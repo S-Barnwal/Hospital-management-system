@@ -3,7 +3,9 @@ import { db } from '../db/pool.js';
 import { verifyJwt } from '../utils/jwt.js';
 import { forbidden, unauthorized } from '../utils/errors.js';
 import { slugFromHost } from '../utils/slug.js';
-import { evaluateTenantAccess, hasAll } from './tenantAccess.js';
+import { evaluateTenantAccess, hasAll, requireFeature } from './tenantAccess.js';
+
+export { requireFeature };
 
 export const COOKIES = {
   tenantAccess: 'hms_at',
@@ -34,10 +36,12 @@ SELECT u.UserId, u.Status AS UserStatus, u.IsOwner,
           SELECT DISTINCT p.Code FROM hms.UserRoles ur
           JOIN hms.RolePermissions rp ON rp.RoleId = ur.RoleId
           JOIN hms.Permissions p ON p.PermissionId = rp.PermissionId
-          WHERE ur.TenantId = t.TenantId AND ur.UserId = u.UserId) x) AS Permissions
+          WHERE ur.TenantId = t.TenantId AND ur.UserId = u.UserId) x) AS Permissions,
+       (SELECT STRING_AGG(pf.FeatureKey, ',') FROM hms.PlanFeatures pf
+         WHERE pf.PlanId = sub.PlanId AND pf.IsIncluded = 1) AS Features
 FROM hms.Users u
 JOIN hms.Tenants t ON t.TenantId = u.TenantId
-OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays FROM hms.Subscriptions s
+OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays, s.PlanId FROM hms.Subscriptions s
              WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
 WHERE u.UserId = @uid AND u.TenantId = @tid;`;
 

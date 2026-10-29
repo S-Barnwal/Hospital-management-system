@@ -142,4 +142,23 @@ router.patch('/:id', requirePermission('users.manage'),
     res.json({ data: { ok: true } });
   }));
 
+/** Removes a login. Owners and your own account cannot be deleted; prefer "Disable" to keep history readable. */
+router.delete('/:id', requirePermission('users.manage'), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  if (id === req.ctx.userId) throw forbidden('You cannot delete your own account.');
+  await withTransaction(async (tx) => {
+    const u = await tx.one('SELECT IsOwner FROM hms.Users WITH (UPDLOCK) WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
+    if (!u) throw notFound('User not found.');
+    if (u.IsOwner) throw forbidden('The owner account cannot be deleted.');
+    const roles = await loadRoles(tx, req.ctx.tenantId, (await tx.query('SELECT RoleId FROM hms.UserRoles WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id })).map((r) => r.RoleId));
+    const problem = roles.length ? assignmentProblem({ actor: actorOf(req.ctx), targetUserId: id, targetIsOwner: false, roles }) : null;
+    if (problem) throw forbidden(problem.replace('grant', 'remove a user with'));
+    await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME() WHERE SubjectType = 'tenant' AND SubjectId = @id AND TenantId = @tid AND RevokedAt IS NULL`, { tid: req.ctx.tenantId, id });
+    await tx.exec('UPDATE hms.StaffMembers SET UserId = NULL WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
+    await tx.exec('DELETE FROM hms.Users WHERE TenantId = @tid AND UserId = @id', { tid: req.ctx.tenantId, id });
+    await auditTenant(req, 'user.deleted', 'user', id, null, tx);
+  });
+  res.json({ data: { ok: true } });
+}));
+
 export default router;

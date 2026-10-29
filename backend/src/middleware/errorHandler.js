@@ -8,8 +8,9 @@ export function notFoundHandler(req, res) {
 const sqlNumber = (err) => err?.number ?? err?.originalError?.info?.number ?? err?.precedingErrors?.[0]?.number;
 
 // Maps SQL Server / connection errors to safe client messages. Never leaks SQL text or stack traces in production.
-function mapSqlError(err) {
+function mapSqlError(err, req) {
   const n = sqlNumber(err);
+  if (n === 547 && req?.method === 'DELETE') return new HttpError(409, 'IN_USE', 'This record is used elsewhere, so it cannot be deleted. Deactivate or archive it instead.');
   if (n === 2627 || n === 2601) return new HttpError(409, 'DUPLICATE', 'A record with the same unique value already exists.');
   if (n === 547) return new HttpError(409, 'CONSTRAINT', 'The operation conflicts with related records.');
   if (n === 1205) return new HttpError(503, 'RETRY', 'The server was busy. Please retry.');
@@ -34,7 +35,7 @@ export function errorHandler(err, req, res, _next) {
   if (err?.type === 'entity.too.large') {
     return res.status(413).json({ error: { code: 'TOO_LARGE', message: 'Request body too large.' } });
   }
-  const mapped = err instanceof HttpError ? err : mapSqlError(err);
+  const mapped = err instanceof HttpError ? err : mapSqlError(err, req);
   if (mapped) {
     if (mapped.status >= 500) console.error(`[${req.method} ${req.path}] ${mapped.code}: ${mapped.message}`);
     return res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message, ...(mapped.details ? { details: mapped.details } : {}) } });

@@ -3,7 +3,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { requireTenant, requirePermission } from '../../middleware/auth.js';
-import { asyncHandler, notFound, badRequest } from '../../utils/errors.js';
+import { asyncHandler, notFound, badRequest, conflict } from '../../utils/errors.js';
 import { db, withTransaction, t } from '../../db/pool.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
@@ -40,6 +40,17 @@ router.patch('/departments/:id', requirePermission('departments.manage'), valida
   { tid: req.ctx.tenantId, id, name: req.body.name ?? null, setDesc: 'description' in req.body, desc: req.body.description ?? null, active: req.body.isActive ?? null });
   if (!n) throw notFound('Department not found.');
   await auditTenant(req, 'department.updated', 'department', id);
+  res.json({ data: { ok: true } });
+}));
+
+router.delete('/departments/:id', requirePermission('departments.manage'), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  const used = await db.one(`SELECT (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @tid AND DepartmentId = @id)
+                                  + (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @tid AND DepartmentId = @id) AS n`, { tid: req.ctx.tenantId, id });
+  if (used.n) throw conflict('Department has staff or appointments. Deactivate it instead.', 'IN_USE');
+  const n = await db.exec('DELETE FROM hms.Departments WHERE TenantId = @tid AND DepartmentId = @id', { tid: req.ctx.tenantId, id });
+  if (!n) throw notFound('Department not found.');
+  await auditTenant(req, 'department.deleted', 'department', id);
   res.json({ data: { ok: true } });
 }));
 
@@ -124,6 +135,23 @@ router.patch('/staff/:id', requirePermission('staff.write'), validate(staffSchem
     { tid: req.ctx.tenantId, id, type: m.staffType, name: m.fullName, dept: m.departmentId ?? null, desig: m.designation ?? null, spec: m.specialization ?? null,
       reg: m.registrationNumber ?? null, phone: m.phone ?? null, email: m.email ?? null, fee: m.consultationFee == null ? null : t.money(m.consultationFee), active: Boolean(m.isActive) });
     await auditTenant(req, 'staff.updated', 'staff', id, { fields: Object.keys(req.body).join(',') }, tx);
+  });
+  res.json({ data: { ok: true } });
+}));
+
+/** Deletes a staff record that was never used (no appointments, consultations, admissions or lab orders). */
+router.delete('/staff/:id', requirePermission('staff.write'), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  await withTransaction(async (tx) => {
+    const used = await tx.one(`SELECT (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @tid AND DoctorId = @id)
+      + (SELECT COUNT(*) FROM hms.Consultations WHERE TenantId = @tid AND DoctorId = @id)
+      + (SELECT COUNT(*) FROM hms.Admissions WHERE TenantId = @tid AND AttendingDoctorId = @id)
+      + (SELECT COUNT(*) FROM hms.LabOrders WHERE TenantId = @tid AND DoctorId = @id) AS n`, { tid: req.ctx.tenantId, id });
+    if (used.n) throw conflict('This person has clinical history, so the record must be kept. Mark them inactive instead.', 'IN_USE');
+    await tx.exec('DELETE FROM hms.DoctorSchedules WHERE TenantId = @tid AND StaffId = @id', { tid: req.ctx.tenantId, id });
+    const n = await tx.exec('DELETE FROM hms.StaffMembers WHERE TenantId = @tid AND StaffId = @id', { tid: req.ctx.tenantId, id });
+    if (!n) throw notFound('Staff member not found.');
+    await auditTenant(req, 'staff.deleted', 'staff', id, null, tx);
   });
   res.json({ data: { ok: true } });
 }));

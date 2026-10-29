@@ -3,6 +3,7 @@ import { LuPlus, LuUserCog, LuCalendarClock, LuPencil, LuTrash2, LuBuilding2 } f
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
+import { notify, withToast } from '../../lib/toast.js';
 import { money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, cx } from '../../components/ui.jsx';
 
@@ -24,6 +25,7 @@ function StaffForm({ open, staff, departments, onClose, onSaved, defaultType = '
       ...(staff ? { isActive: Boolean(v.isActive) } : {}),
     };
     if (staff) await api.patch(`/hr/staff/${staff.id}`, body); else await api.post('/hr/staff', body);
+    notify.success(staff ? 'Staff member updated.' : 'Staff member added.');
     onSaved();
   });
   return (
@@ -60,7 +62,7 @@ function ScheduleEditor({ doctor, onClose }) {
   const update = (i, k, v) => setBlocks((bs) => bs.map((b, j) => (j === i ? { ...b, [k]: k === 'startTime' || k === 'endTime' ? v : Number(v) } : b)));
   const save = async () => {
     setSaving(true); setError(null);
-    try { await api.put(`/hr/staff/${doctor.id}/schedule`, { blocks }); onClose(); } catch (e) { setError(e.message); } finally { setSaving(false); }
+    try { await api.put(`/hr/staff/${doctor.id}/schedule`, { blocks }); notify.success('Schedule saved.'); onClose(); } catch (e) { setError(e.message); } finally { setSaving(false); }
   };
   return (
     <Modal open={Boolean(doctor)} onClose={onClose} title={`Weekly schedule — ${doctor?.fullName ?? ''}`} size="lg"
@@ -93,7 +95,7 @@ function Departments({ can }) {
   const [err, setErr] = useState(null);
   const add = async (e) => {
     e.preventDefault(); setErr(null);
-    try { await api.post('/hr/departments', { name }); setName(''); reload(); } catch (x) { setErr(x.message); }
+    try { await api.post('/hr/departments', { name }); notify.success('Department added.'); setName(''); reload(); } catch (x) { setErr(x.message); }
   };
   return (
     <Card>
@@ -110,7 +112,10 @@ function Departments({ can }) {
           { key: 'staffCount', label: 'Active staff' },
           { key: 'isActive', label: 'Status', render: (d) => <Badge tone={d.isActive ? 'green' : 'gray'}>{d.isActive ? 'Active' : 'Inactive'}</Badge> },
           { key: 'act', label: <span className="sr-only">Actions</span>, className: 'text-right', render: (d) => can('departments.manage') && (
-            <Button size="sm" variant="ghost" onClick={async () => { await api.patch(`/hr/departments/${d.id}`, { isActive: !d.isActive }).catch((x) => setErr(x.message)); reload(); }}>{d.isActive ? 'Deactivate' : 'Activate'}</Button>) },
+            <div className="flex justify-end gap-1">
+              <Button size="sm" variant="ghost" onClick={async () => { if (await withToast(() => api.patch(`/hr/departments/${d.id}`, { isActive: !d.isActive }), d.isActive ? 'Department deactivated.' : 'Department activated.')) reload(); }}>{d.isActive ? 'Deactivate' : 'Activate'}</Button>
+              <Button size="sm" variant="ghost" aria-label={`Delete ${d.name}`} onClick={async () => { if (window.confirm(`Delete department “${d.name}”?`) && (await withToast(() => api.del(`/hr/departments/${d.id}`), 'Department deleted.'))) reload(); }}><LuTrash2 aria-hidden /></Button>
+            </div>) },
         ]} />
     </Card>
   );
@@ -157,6 +162,7 @@ export default function Staff() {
                 <div className="flex justify-end gap-1">
                   {s.staffType === 'doctor' && <Button size="sm" variant="outline" onClick={() => setSchedule(s)}><LuCalendarClock aria-hidden /> Schedule</Button>}
                   <Button size="sm" variant="ghost" onClick={() => setEditing(s)} aria-label={`Edit ${s.fullName}`}><LuPencil aria-hidden /></Button>
+                  <Button size="sm" variant="ghost" aria-label={`Delete ${s.fullName}`} onClick={async () => { if (window.confirm(`Delete ${s.fullName}? Only possible if they have no clinical history.`) && (await withToast(() => api.del(`/hr/staff/${s.id}`), 'Staff member deleted.'))) reload(); }}><LuTrash2 aria-hidden /></Button>
                 </div>) },
             ]} />
           <Pagination meta={meta} onPage={setPage} />

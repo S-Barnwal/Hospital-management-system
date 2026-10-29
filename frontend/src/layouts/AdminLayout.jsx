@@ -4,6 +4,7 @@ import { LuLayoutDashboard, LuBuilding2, LuLayers, LuCreditCard, LuCalendarCheck
 import { useAdminAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Logo.jsx';
 import { Spinner, cx } from '../components/ui.jsx';
+import Toasts from '../components/Toasts.jsx';
 
 const NAV = [
   ['/admin/dashboard', 'Overview', LuLayoutDashboard],
@@ -56,6 +57,7 @@ export default function AdminLayout() {
           <button onClick={() => setOpen(true)} className="p-2" aria-label="Open menu"><LuMenu className="h-5 w-5" /></button>
           <p className="font-semibold">Platform Admin</p>
         </header>
+        <Toasts />
         <main className="px-4 py-6 sm:px-6 lg:px-8"><Outlet /></main>
       </div>
     </div>

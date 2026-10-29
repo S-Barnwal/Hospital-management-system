@@ -21,10 +21,15 @@ Legend — **Tested here**: covered by unit tests that were run (36/36 passing).
 | Doctors, staff, departments, weekly schedules | Written, untested | |
 | Users & roles UI, role permission matrix | Written, untested | |
 | Hospital settings, subscription renewal, invoices | Written, untested | |
-| OPD / clinical records | **Not implemented** (Phase 6) | permissions seeded, page says "coming soon" |
-| IPD, wards, beds | **Not implemented** (Phase 6) | |
-| Patient billing | **Not implemented** (Phase 6) | dashboard shows no revenue figure instead of a fake one |
-| Laboratory, pharmacy, inventory, reports/CSV | **Not implemented** (Phase 6) | |
+| OPD: consultations, vitals, diagnosis, prescriptions, versioning, finalise lock, print | Written, untested against DB | draft can be discarded; final is permanent |
+| IPD: wards, beds, bed board, admit / transfer / discharge, bed charges | Written; bed-day maths tested | double-booking blocked by filtered unique index |
+| Billing: draft → finalise (sequential numbers), items, GST, discount, payments, refunds, cancel, print | Written; maths tested | finalised bills immutable; refunds are separate rows |
+| Laboratory: catalogue, orders, sample → results → verification, flags, print | Written; flags & workflow tested | results locked after verification |
+| Pharmacy: medicines, suppliers, batches/expiry, FEFO dispensing, adjustments, ledger, alerts | Written; FEFO tested | negative stock blocked by code + CHECK constraint |
+| Reports: KPIs, 7 reports, CSV export (formula-injection safe) | Written; CSV escaping tested | |
+| Plan gating (Starter has no billing/IPD/lab/pharmacy/reports) | Tested here (middleware) | UI shows "Upgrade" |
+| Toast notifications (react-toastify) | Rendered here | hospital app + admin portal |
+| Multi-branch management | **Not implemented** | Enterprise roadmap |
 | E-mail / SMS notifications | **Integration pending** | reset links printed to server log in development |
 | File uploads | **Not implemented** | design in SECURITY.md |
 | MFA for privileged accounts | **Not implemented** | |

@@ -25,6 +25,7 @@ export function TenantAuthProvider({ children }) {
   const value = useMemo(() => ({
     me, loading, refresh, logout,
     can: (...perms) => perms.every((p) => me?.permissions?.includes(p)),
+    hasFeature: (key) => !key || Boolean(me?.features?.includes(key)),
   }), [me, loading, refresh, logout]);
   return <TenantAuth.Provider value={value}>{children}</TenantAuth.Provider>;
 }

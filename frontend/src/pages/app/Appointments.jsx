@@ -4,6 +4,7 @@ import { LuPlus, LuCalendarClock, LuLogIn, LuCheck, LuX, LuCalendarDays } from '
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
+import { notify, withToast } from '../../lib/toast.js';
 import { fullName, time, todayIn, titleCase } from '../../lib/format.js';
 import { Alert, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Spinner, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
 
@@ -130,7 +131,7 @@ export default function Appointments() {
 
   const setStatus = async (a, status, cancelReason) => {
     setActionError(null);
-    try { await api.post(`/appointments/${a.id}/status`, { status, ...(cancelReason ? { cancelReason } : {}) }); reload(); } catch (e) { setActionError(e.message); }
+    try { await api.post(`/appointments/${a.id}/status`, { status, ...(cancelReason ? { cancelReason } : {}) }); notify.success(`Appointment ${a.number} ${status.replace('_', ' ')}.`); reload(); } catch (e) { notify.error(e.message); }
   };
 
   return (
@@ -168,8 +169,8 @@ export default function Appointments() {
       </Card>
 
       <BookingModal open={params.get('new') === '1'} tz={tz} presetPatientId={params.get('patientId')}
-        onClose={() => setParams({})} onSaved={() => { setParams({}); reload(); }} />
-      {rescheduling && <BookingModal open tz={tz} existing={rescheduling} onClose={() => setRescheduling(null)} onSaved={() => { setRescheduling(null); reload(); }} />}
+        onClose={() => setParams({})} onSaved={() => { setParams({}); notify.success('Appointment booked.'); reload(); }} />
+      {rescheduling && <BookingModal open tz={tz} existing={rescheduling} onClose={() => setRescheduling(null)} onSaved={() => { setRescheduling(null); notify.success('Appointment rescheduled.'); reload(); }} />}
       <CancelDialog appt={cancelling} onClose={() => setCancelling(null)} onConfirm={async (reason) => { await setStatus(cancelling, 'cancelled', reason); setCancelling(null); }} />
     </>
   );

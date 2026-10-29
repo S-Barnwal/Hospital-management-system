@@ -26,7 +26,18 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
       (SELECT COUNT(*) FROM hms.Patients WHERE TenantId = @tid AND CreatedAt >= @monthStart) AS newPatientsThisMonth,
       (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType = 'doctor') AS doctors,
       (SELECT COUNT(*) FROM hms.StaffMembers WHERE TenantId = @tid AND IsActive = 1 AND StaffType <> 'doctor') AS staff,
-      (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end AND Status = 'completed' AND VisitType IN ('opd','follow_up')) AS opdVisitsToday;
+      (SELECT COUNT(*) FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end AND Status = 'completed' AND VisitType IN ('opd','follow_up')) AS opdVisitsToday,
+      (SELECT COUNT(*) FROM hms.Consultations WHERE TenantId = @tid AND FinalizedAt >= @start AND FinalizedAt < @end) AS consultationsToday,
+      (SELECT COUNT(*) FROM hms.Beds b JOIN hms.Wards w ON w.TenantId = b.TenantId AND w.WardId = b.WardId WHERE b.TenantId = @tid AND w.IsActive = 1) AS totalBeds,
+      (SELECT COUNT(*) FROM hms.Beds WHERE TenantId = @tid AND Status = 'occupied') AS occupiedBeds,
+      (SELECT COUNT(*) FROM hms.Bills WHERE TenantId = @tid AND Status = 'finalized' AND PaidAmount < Total) AS pendingBills,
+      (SELECT ISNULL(SUM(Total - PaidAmount), 0) FROM hms.Bills WHERE TenantId = @tid AND Status = 'finalized' AND PaidAmount < Total) AS pendingAmount,
+      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end) AS collectedToday,
+      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @monthStart) AS collectedThisMonth,
+      (SELECT COUNT(*) FROM (SELECT m.MedicineId, m.ReorderLevel,
+          ISNULL((SELECT SUM(QuantityOnHand) FROM hms.StockBatches sb WHERE sb.TenantId = m.TenantId AND sb.MedicineId = m.MedicineId AND sb.ExpiryDate >= CAST(@start AS DATE)), 0) AS stock
+        FROM hms.Medicines m WHERE m.TenantId = @tid AND m.IsActive = 1) x WHERE x.stock <= x.ReorderLevel) AS lowStock,
+      (SELECT COUNT(*) FROM hms.LabOrders WHERE TenantId = @tid AND Status IN ('ordered','sample_collected','completed')) AS pendingLab;
     SELECT Status, COUNT(*) AS n FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end GROUP BY Status;
     SELECT CAST(DATEADD(MINUTE, @offset, StartAt) AS DATE) AS day, COUNT(*) AS n
       FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @trendStart AND StartAt < @end AND Status <> 'cancelled'
@@ -58,6 +69,9 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
   if (sub.state === 'grace') alerts.push({ level: 'warning', message: `Subscription period ended. ${sub.daysLeft} day(s) of grace left — renew to avoid read-only mode.` });
   else if (sub.state === 'expired') alerts.push({ level: 'danger', message: 'Subscription expired. Your data is safe but read-only until you renew.' });
   else if (sub.state === 'active' && sub.daysLeft <= 7) alerts.push({ level: 'info', message: `Subscription renews in ${sub.daysLeft} day(s).` });
+  if (req.ctx.permissions.has('pharmacy.read') && req.ctx.features.has('pharmacy') && c.lowStock > 0) {
+    alerts.push({ level: 'warning', message: `${c.lowStock} medicine(s) at or below reorder level.` });
+  }
 
   res.json({
     data: {
@@ -70,11 +84,13 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
         opdVisitsToday: canAppts ? c.opdVisitsToday : null,
         doctors: canStaff ? c.doctors : null,
         staff: canStaff ? c.staff : null,
-        // Phase 6 modules — not implemented yet, so no number is shown.
-        occupiedBeds: { available: false, module: 'ipd' },
-        pendingPayments: { available: false, module: 'billing' },
-        revenue: { available: false, module: 'billing' },
-        lowStock: { available: false, module: 'pharmacy' },
+        consultationsToday: req.ctx.permissions.has('opd.read') && req.ctx.features.has('opd') ? c.consultationsToday : null,
+        // null = module not in plan or no permission (UI shows nothing rather than a made-up number)
+        beds: req.ctx.permissions.has('ipd.read') && req.ctx.features.has('ipd') ? { total: c.totalBeds, occupied: c.occupiedBeds } : null,
+        pendingPayments: req.ctx.permissions.has('billing.read') && req.ctx.features.has('billing') ? { bills: c.pendingBills, amount: c.pendingAmount } : null,
+        collections: req.ctx.permissions.has('billing.read') && req.ctx.features.has('billing') ? { today: c.collectedToday, month: c.collectedThisMonth } : null,
+        lowStock: req.ctx.permissions.has('pharmacy.read') && req.ctx.features.has('pharmacy') ? c.lowStock : null,
+        pendingLab: req.ctx.permissions.has('lab.read') && req.ctx.features.has('laboratory') ? c.pendingLab : null,
       },
       appointmentTrend: canAppts ? series : [],
       upcomingAppointments: canAppts ? upcoming : [],

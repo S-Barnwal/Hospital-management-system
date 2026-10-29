@@ -4,6 +4,7 @@ import { LuPlus, LuSearch, LuUsers, LuArrowLeft, LuArchive, LuPencil, LuCalendar
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
+import { notify, withToast } from '../../lib/toast.js';
 import { age, date, dateTime, fullName, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge } from '../../components/ui.jsx';
 
@@ -108,7 +109,7 @@ export default function Patients() {
         <Pagination meta={meta} onPage={setPage} />
       </Card>
       <PatientForm open={showNew} onClose={() => setParams({})}
-        onSaved={(id, num) => { setParams({}); setNotice(`Patient ${num} registered.`); reload(); navigate(`/app/patients/${id}`); }} />
+        onSaved={(id, num) => { setParams({}); notify.success(`Patient ${num} registered.`); reload(); navigate(`/app/patients/${id}`); }} />
     </>
   );
 }
@@ -127,7 +128,7 @@ export function PatientDetail() {
 
   const toggleArchive = async () => {
     setBusy(true);
-    try { await api.post(`/patients/${id}/archive`, { archived: !p.isArchived }); await reload(); } finally { setBusy(false); }
+    try { await api.post(`/patients/${id}/archive`, { archived: !p.isArchived }); notify.success(p.isArchived ? 'Patient restored.' : 'Patient archived (record kept, hidden from lists).'); await reload(); } catch (e) { notify.error(e.message); } finally { setBusy(false); }
   };
 
   const rows = [
@@ -166,7 +167,7 @@ export function PatientDetail() {
             ]} />
         </Card>
       </div>
-      {editing && <PatientForm open patient={p} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); reload(); }} />}
+      {editing && <PatientForm open patient={p} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); notify.success('Patient updated.'); reload(); }} />}
     </>
   );
 }

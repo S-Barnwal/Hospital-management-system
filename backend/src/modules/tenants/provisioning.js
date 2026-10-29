@@ -6,6 +6,28 @@ import { addInterval } from '../../utils/pricing.js';
 import { audit } from '../../utils/audit.js';
 import { t } from '../../db/pool.js';
 
+/** Common tests every new hospital starts with; prices are 0 so each hospital sets its own. */
+export const DEFAULT_LAB_TESTS = [
+  ['HB', 'Haemoglobin', 'Blood', 'g/dL', 12, 17, null],
+  ['TLC', 'Total Leucocyte Count', 'Blood', '10^3/µL', 4, 11, null],
+  ['PLT', 'Platelet Count', 'Blood', '10^3/µL', 150, 450, null],
+  ['FBS', 'Blood Sugar (Fasting)', 'Blood', 'mg/dL', 70, 100, null],
+  ['PPBS', 'Blood Sugar (Post-prandial)', 'Blood', 'mg/dL', 70, 140, null],
+  ['HBA1C', 'HbA1c', 'Blood', '%', 4, 5.6, null],
+  ['CREAT', 'Serum Creatinine', 'Blood', 'mg/dL', 0.6, 1.3, null],
+  ['UREA', 'Blood Urea', 'Blood', 'mg/dL', 15, 45, null],
+  ['TSH', 'TSH', 'Blood', 'µIU/mL', 0.4, 4.0, null],
+  ['URINE', 'Urine Routine', 'Urine', null, null, null, 'See report'],
+];
+
+export async function seedDefaultLabTests(tx, tenantId) {
+  for (const [code, name, sample, unit, lo, hi, text] of DEFAULT_LAB_TESTS) {
+    await tx.exec(`IF NOT EXISTS (SELECT 1 FROM hms.LabTests WHERE TenantId = @tid AND Code = @code)
+                   INSERT INTO hms.LabTests (TenantId, Code, Name, SampleType, Unit, RefLow, RefHigh, RefText, Price) VALUES (@tid, @code, @name, @st, @unit, @lo, @hi, @txt, 0)`,
+    { tid: tenantId, code, name, st: sample, unit, lo: lo == null ? null : t.dec(lo, 12, 4), hi: hi == null ? null : t.dec(hi, 12, 4), txt: text });
+  }
+}
+
 export const DEFAULT_DEPARTMENTS = ['General Medicine', 'Paediatrics', 'Gynaecology', 'Orthopaedics', 'Emergency'];
 
 /** Copies the default role templates (with permissions) into a tenant. Returns { [roleCode]: RoleId }. */
@@ -66,6 +88,7 @@ export async function provisionTenant(tx, o, plan, payment, actor = { type: 'sys
   for (const name of DEFAULT_DEPARTMENTS) {
     await tx.exec('INSERT INTO hms.Departments (TenantId, Name) VALUES (@tid, @name)', { tid: tenantId, name });
   }
+  await seedDefaultLabTests(tx, tenantId);
 
   const start = new Date();
   const end = addInterval(start, plan.interval);

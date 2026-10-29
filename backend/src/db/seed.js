@@ -5,9 +5,9 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { config } from '../config/env.js';
 import { db, withTransaction, closePool } from './pool.js';
-import { PERMISSIONS } from '../modules/rbac/permissions.js';
+import { PERMISSIONS, ROLE_TEMPLATES } from '../modules/rbac/permissions.js';
 import { hashPassword, passwordProblem } from '../utils/password.js';
-import { provisionTenant } from '../modules/tenants/provisioning.js';
+import { provisionTenant, seedDefaultLabTests } from '../modules/tenants/provisioning.js';
 import { nextSequence, formatNumber } from '../modules/tenants/sequences.js';
 
 export async function seedPermissions() {
@@ -21,7 +21,24 @@ export async function seedPermissions() {
   await db.exec(`INSERT INTO hms.RolePermissions (RoleId, PermissionId)
                  SELECT r.RoleId, p.PermissionId FROM hms.Roles r CROSS JOIN hms.Permissions p
                  WHERE r.Code = 'owner' AND NOT EXISTS (SELECT 1 FROM hms.RolePermissions rp WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId)`);
-  console.log(`✓ ${PERMISSIONS.length} permissions`);
+  // Built-in roles receive permissions added in newer releases (custom grants are never removed).
+  for (const role of ROLE_TEMPLATES) {
+    await db.exec(`INSERT INTO hms.RolePermissions (RoleId, PermissionId)
+                   SELECT r.RoleId, p.PermissionId FROM hms.Roles r CROSS JOIN hms.Permissions p
+                   WHERE r.Code = @code AND r.IsSystem = 1 AND p.Code IN (SELECT value FROM STRING_SPLIT(@codes, ','))
+                     AND NOT EXISTS (SELECT 1 FROM hms.RolePermissions rp WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId)`,
+    { code: role.code, codes: role.permissions.join(',') });
+  }
+  console.log(`✓ ${PERMISSIONS.length} permissions (built-in roles synced)`);
+}
+
+/** Gives hospitals created before the lab module its default test catalogue. */
+export async function backfillTenants() {
+  const tenants = await db.query('SELECT TenantId FROM hms.Tenants');
+  for (const { TenantId } of tenants) {
+    await withTransaction((tx) => seedDefaultLabTests(tx, TenantId));
+  }
+  if (tenants.length) console.log(`✓ default lab tests ensured for ${tenants.length} hospital(s)`);
 }
 
 export async function seedSuperAdmin() {
@@ -71,12 +88,40 @@ async function seedDemo() {
     });
     console.log(`✓ demo tenant ${d.slug} — login ${d.ownerEmail} / ${DEMO_PASSWORD}`);
   }
+  // Demo wards & pharmacy stock (only added once).
+  for (const d of DEMO) {
+    const tenant = await db.one('SELECT TenantId FROM hms.Tenants WHERE Slug = @s', { s: d.slug });
+    if (!tenant) continue;
+    const tid = tenant.TenantId;
+    if (!(await db.one('SELECT TOP 1 1 AS x FROM hms.Wards WHERE TenantId = @tid', { tid }))) {
+      await withTransaction(async (tx) => {
+        for (const [name, type, rate, beds] of [['General Ward', 'general', 1500, 6], ['Private Rooms', 'private', 4000, 3], ['ICU', 'icu', 8000, 2]]) {
+          const w = await tx.one('INSERT INTO hms.Wards (TenantId, Name, WardType, DailyRate) OUTPUT INSERTED.WardId VALUES (@tid, @n, @t, @r)', { tid, n: name, t: type, r: rate });
+          for (let i = 1; i <= beds; i += 1) await tx.exec('INSERT INTO hms.Beds (TenantId, WardId, BedNumber) VALUES (@tid, @w, @b)', { tid, w: w.WardId, b: `${name[0]}${i}` });
+        }
+      });
+    }
+    if (!(await db.one('SELECT TOP 1 1 AS x FROM hms.Medicines WHERE TenantId = @tid', { tid }))) {
+      await withTransaction(async (tx) => {
+        const exp = new Date(Date.UTC(new Date().getUTCFullYear() + 1, 5, 30));
+        for (const [name, strength, form, price, qty] of [['Paracetamol', '500 mg', 'Tablet', 2, 200], ['Amoxicillin', '500 mg', 'Capsule', 8, 100], ['ORS', '21 g', 'Sachet', 20, 8]]) {
+          const m = await tx.one(`INSERT INTO hms.Medicines (TenantId, Name, Strength, Form, Unit, TaxRatePercent, SalePrice, ReorderLevel)
+                                  OUTPUT INSERTED.MedicineId VALUES (@tid, @n, @s, @f, 'unit', 12, @p, 10)`, { tid, n: name, s: strength, f: form, p: price });
+          const b = await tx.one(`INSERT INTO hms.StockBatches (TenantId, MedicineId, BatchNumber, ExpiryDate, QuantityOnHand, PurchasePrice, SalePrice)
+                                  OUTPUT INSERTED.BatchId VALUES (@tid, @m, 'DEMO-001', @e, @q, @pp, @p)`, { tid, m: m.MedicineId, e: exp, q: qty, pp: price * 0.7, p: price });
+          await tx.exec(`INSERT INTO hms.StockMovements (TenantId, MedicineId, BatchId, Kind, Quantity, Reference) VALUES (@tid, @m, @b, 'receive', @q, 'Demo opening stock')`,
+            { tid, m: m.MedicineId, b: b.BatchId, q: qty });
+        }
+      });
+    }
+  }
 }
 
 const isMain = process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
 if (isMain) {
   (async () => {
     await seedPermissions();
+    await backfillTenants();
     await seedSuperAdmin();
     if (process.argv.includes('--demo')) await seedDemo();
   })()

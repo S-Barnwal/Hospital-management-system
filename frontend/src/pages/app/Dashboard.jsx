@@ -1,11 +1,13 @@
+import { useEffect } from 'react';
 import { Link } from 'react-router-dom';
-import { LuUsers, LuCalendarClock, LuStethoscope, LuUserCog, LuBedDouble, LuReceipt, LuArrowRight, LuPlus } from 'react-icons/lu';
+import { LuUsers, LuCalendarClock, LuStethoscope, LuUserCog, LuBedDouble, LuReceipt, LuArrowRight, LuPlus, LuIndianRupee, LuPill, LuFlaskConical } from 'react-icons/lu';
+import { notify } from '../../lib/toast.js';
 import { api } from '../../lib/api.js';
 import { useApi } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { Alert, Button, Card, EmptyState, PageHeader, Skeleton, StatCard, StatusBadge } from '../../components/ui.jsx';
 import BarChart from '../../components/BarChart.jsx';
-import { dateTime, fullName, relative, titleCase } from '../../lib/format.js';
+import { dateTime, fullName, money, relative, titleCase } from '../../lib/format.js';
 
 const fmt = (n) => (n === null || n === undefined ? '—' : new Intl.NumberFormat('en-IN').format(n));
 
@@ -16,6 +18,17 @@ export default function Dashboard() {
   const tz = me.tenant.timezone;
   const hour = Number(new Intl.DateTimeFormat('en-GB', { hour: 'numeric', hour12: false, timeZone: tz }).format(new Date()));
   const greeting = hour < 12 ? 'Good morning' : hour < 17 ? 'Good afternoon' : 'Good evening';
+
+  // Surface important alerts once per browser session as toasts.
+  useEffect(() => {
+    if (!data?.alerts?.length) return;
+    let seen = '';
+    try { seen = sessionStorage.getItem('hms_alerts_seen') || ''; } catch { /* storage unavailable */ }
+    const key = data.alerts.map((a) => a.message).join('|');
+    if (seen === key) return;
+    data.alerts.forEach((a) => (a.level === 'danger' ? notify.error(a.message) : a.level === 'warning' ? notify.warning(a.message) : notify.info(a.message)));
+    try { sessionStorage.setItem('hms_alerts_seen', key); } catch { /* ignore */ }
+  }, [data]);
 
   return (
     <>
@@ -39,13 +52,13 @@ export default function Dashboard() {
         <StatCard label="Doctors / other staff" icon={LuUserCog} loading={loading} value={w && w.doctors !== null ? `${fmt(w.doctors)} / ${fmt(w.staff)}` : '—'} unavailable={w && w.doctors === null} />
       </div>
 
-      <div className="mt-4 grid gap-4 sm:grid-cols-2">
-        {[[LuBedDouble, 'Occupied beds', 'IPD module'], [LuReceipt, 'Pending payments & revenue', 'Billing module']].map(([I, l, m]) => (
-          <Card key={l} className="flex items-center gap-4 border-dashed p-5">
-            <span className="grid h-10 w-10 place-items-center rounded-lg bg-gold-50 text-gold-700"><I className="h-5 w-5" aria-hidden /></span>
-            <div><p className="font-medium text-ink">{l}</p><p className="text-xs text-muted">Available when the {m} is enabled (Phase 6). No figures are estimated.</p></div>
-          </Card>
-        ))}
+      <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+        {w?.beds && <StatCard label="Occupied beds" icon={LuBedDouble} value={`${fmt(w.beds.occupied)} / ${fmt(w.beds.total)}`} hint={w.beds.total ? `${Math.round((w.beds.occupied / w.beds.total) * 100)}% occupancy` : 'No beds set up yet'} />}
+        {w?.collections && <StatCard label="Collected today" icon={LuIndianRupee} value={money(w.collections.today)} hint={`${money(w.collections.month)} this month (net of refunds)`} />}
+        {w?.pendingPayments && <StatCard label="Pending payments" icon={LuReceipt} value={money(w.pendingPayments.amount)} hint={`${fmt(w.pendingPayments.bills)} unpaid bill(s)`} />}
+        {w && w.lowStock !== null && w.lowStock !== undefined && <StatCard label="Low-stock medicines" icon={LuPill} value={fmt(w.lowStock)} hint="At or below reorder level" />}
+        {w && w.pendingLab !== null && w.pendingLab !== undefined && <StatCard label="Lab orders pending" icon={LuFlaskConical} value={fmt(w.pendingLab)} hint="Not yet verified" />}
+        {w && w.consultationsToday !== null && w.consultationsToday !== undefined && <StatCard label="Consultations finalised today" icon={LuStethoscope} value={fmt(w.consultationsToday)} />}
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">

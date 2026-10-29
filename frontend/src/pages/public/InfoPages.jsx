@@ -25,6 +25,12 @@ const FEATURE_DETAIL = {
   staff: ['Doctors, nurses, front desk, lab, pharmacy, accounts', 'Departments you configure', 'Registration numbers and consultation fees'],
   rbac: ['Owner, Admin, Manager, Receptionist, Doctor, Nurse, Lab, Pharmacist, Accountant', 'Customise permissions per role', 'No one can grant themselves more access'],
   settings: ['Hospital timezone for all dates and times', 'Patient number prefix', 'Subscription, invoices and renewal'],
+  opd: ['Vitals, complaints, examination and diagnosis', 'Prescriptions with dose, frequency and duration', 'Every edit versioned; finalised notes are locked', 'Printable prescription'],
+  ipd: ['Live bed board by ward', 'Admit, transfer and discharge', 'Double-booking of beds blocked by the database', 'Bed charges added to the bill on discharge'],
+  billing: ['GST per line, bill-level discount', 'Sequential invoice & receipt numbers', 'Partial payments, refunds and cancellations', 'Finalised invoices cannot be edited'],
+  lab: ['Test catalogue with reference ranges', 'Sample → results → verification workflow', 'Automatic high/low flags', 'Printable verified reports'],
+  pharmacy: ['Batch & expiry tracking', 'First-expiry-first-out dispensing', 'Low-stock and expiry alerts', 'Full stock movement ledger'],
+  reports: ['Registrations, appointments, admissions', 'Collections and outstanding bills', 'Lab volume and inventory value', 'CSV export'],
 };
 
 export function Features() {

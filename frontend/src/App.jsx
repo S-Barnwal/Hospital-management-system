@@ -13,21 +13,19 @@ import Dashboard from './pages/app/Dashboard.jsx';
 import Patients, { PatientDetail } from './pages/app/Patients.jsx';
 import Appointments from './pages/app/Appointments.jsx';
 import Staff from './pages/app/Staff.jsx';
-import { UsersRoles, Settings, Subscription, AuditLog, ComingSoon } from './pages/app/AccountPages.jsx';
+import { UsersRoles, Settings, Subscription, AuditLog } from './pages/app/AccountPages.jsx';
+import Opd, { ConsultationDetail } from './pages/app/Opd.jsx';
+import Ipd from './pages/app/Ipd.jsx';
+import Billing, { BillDetail } from './pages/app/Billing.jsx';
+import Lab, { LabOrderDetail } from './pages/app/Lab.jsx';
+import Pharmacy from './pages/app/Pharmacy.jsx';
+import Reports from './pages/app/Reports.jsx';
 import {
   AdminDashboard, Tenants, TenantDetail, Plans, Subscriptions, Payments, DemoRequests, Messages, AuditLogs, AdminSettings,
 } from './pages/admin/AdminPages.jsx';
 
-const guard = (perm, el) => <RequirePerm perm={perm}>{el}</RequirePerm>;
+const guard = (perm, el, feature) => <RequirePerm perm={perm} feature={feature}>{el}</RequirePerm>;
 
-const SOON = [
-  ['opd', 'OPD & clinical records', 'Consultations, vitals, diagnoses and prescriptions with versioned history.', 'opd.read'],
-  ['admissions', 'Admissions & beds', 'Admission, transfer, discharge and live bed occupancy.', 'ipd.read'],
-  ['billing', 'Billing', 'Patient bills, receipts, refunds and outstanding balances.', 'billing.read'],
-  ['laboratory', 'Laboratory', 'Test orders, samples, results and verification.', 'lab.read'],
-  ['pharmacy', 'Pharmacy & inventory', 'Stock, batches, expiry and dispensing.', 'pharmacy.read'],
-  ['reports', 'Reports', 'Operational and financial reports with CSV export.', 'reports.read'],
-];
 
 export default function App() {
   return (
@@ -62,7 +60,17 @@ export default function App() {
             <Route path="audit-log" element={guard('audit.read', <AuditLog />)} />
             <Route path="settings" element={guard('settings.read', <Settings />)} />
             <Route path="subscription" element={guard('subscription.read', <Subscription />)} />
-            {SOON.map(([path, title, desc, perm]) => <Route key={path} path={path} element={guard(perm, <ComingSoon title={title} description={desc} />)} />)}
+            <Route path="opd" element={guard('opd.read', <Opd />, 'opd')} />
+            <Route path="opd/:id" element={guard('opd.read', <ConsultationDetail />, 'opd')} />
+            <Route path="admissions" element={guard('ipd.read', <Ipd />, 'ipd')} />
+            <Route path="beds" element={<Navigate to="/app/admissions" replace />} />
+            <Route path="billing" element={guard('billing.read', <Billing />, 'billing')} />
+            <Route path="billing/:id" element={guard('billing.read', <BillDetail />, 'billing')} />
+            <Route path="laboratory" element={guard('lab.read', <Lab />, 'laboratory')} />
+            <Route path="laboratory/:id" element={guard('lab.read', <LabOrderDetail />, 'laboratory')} />
+            <Route path="pharmacy" element={guard('pharmacy.read', <Pharmacy />, 'pharmacy')} />
+            <Route path="inventory" element={<Navigate to="/app/pharmacy" replace />} />
+            <Route path="reports" element={guard('reports.read', <Reports />, 'reports')} />
             <Route path="*" element={<Navigate to="dashboard" replace />} />
           </Route>
         </Route>

@@ -1,9 +1,10 @@
 // Users & roles, Settings, Subscription, Audit log and "coming soon" module pages.
 import { Fragment, useEffect, useMemo, useState } from 'react';
-import { LuPlus, LuShieldCheck, LuHistory, LuPackage, LuFileText } from 'react-icons/lu';
+import { LuPlus, LuShieldCheck, LuHistory, LuPackage, LuFileText, LuTrash2 } from 'react-icons/lu';
 import { api } from '../../lib/api.js';
 import { useApi, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
+import { notify, withToast } from '../../lib/toast.js';
 import { date, dateTime, money, titleCase, relative, BRAND } from '../../lib/format.js';
 import { openRazorpay } from '../../lib/payments.js';
 import SandboxGateway from '../../components/SandboxGateway.jsx';
@@ -21,6 +22,7 @@ function UserForm({ open, user, roles, onClose, onSaved }) {
     if (!v.roleIds.length) throw new Error('Select at least one role.');
     if (user) await api.patch(`/users/${user.id}`, { fullName: v.fullName, roleIds: v.roleIds });
     else await api.post('/users', v);
+    notify.success(user ? 'User updated.' : 'User created.');
     onSaved();
   });
   return (
@@ -55,11 +57,11 @@ function RoleMatrix({ roles, permissions, canEdit, myRoles, onSaved }) {
   const modules = useMemo(() => [...new Set(permissions?.map((p) => p.module))], [permissions]);
   const save = async () => {
     setError(null);
-    try { await api.put(`/users/roles/${editing.id}/permissions`, { permissions: editing.permissions }); setEditing(null); onSaved(); } catch (e) { setError(e.message); }
+    try { await api.put(`/users/roles/${editing.id}/permissions`, { permissions: editing.permissions }); notify.success('Role permissions saved.'); setEditing(null); onSaved(); } catch (e) { setError(e.message); }
   };
   return (
     <Card className="overflow-hidden">
-      <div className="overflow-x-auto">
+      <div className="relative overflow-x-auto">
         <table className="table-base">
           <thead className="bg-forest-50/40">
             <tr><th scope="col">Permission</th>{roles?.map((r) => (
@@ -111,7 +113,7 @@ export function UsersRoles() {
   const perms = useApi(() => api.get('/users/permissions'), []);
   const setStatus = async (u, status) => {
     setError(null);
-    try { await api.patch(`/users/${u.id}`, { status }); users.reload(); } catch (e) { setError(e.message); }
+    try { await api.patch(`/users/${u.id}`, { status }); notify.success(status === 'active' ? 'User enabled.' : 'User disabled and signed out.'); users.reload(); } catch (e) { notify.error(e.message); }
   };
   return (
     <>
@@ -135,6 +137,7 @@ export function UsersRoles() {
                 <div className="flex justify-end gap-1">
                   <Button size="sm" variant="ghost" onClick={() => setEditing(u)}>Edit</Button>
                   {!u.isOwner && <Button size="sm" variant="ghost" onClick={() => setStatus(u, u.status === 'active' ? 'disabled' : 'active')}>{u.status === 'active' ? 'Disable' : 'Enable'}</Button>}
+                  {!u.isOwner && <Button size="sm" variant="ghost" aria-label={`Delete ${u.fullName}`} onClick={async () => { if (window.confirm(`Delete the login for ${u.fullName}? Their past actions stay in the audit log.`) && (await withToast(() => api.del(`/users/${u.id}`), 'User deleted.'))) users.reload(); }}><LuTrash2 aria-hidden /></Button>}
                 </div>) },
             ]} />
         </Card>
@@ -164,6 +167,7 @@ export function Settings() {
     await api.put('/settings', { name: v.name, email: v.email || null, phone: v.phone || null, city: v.city || null, state: v.state || null, timezone: v.timezone,
       settings: { 'patient.number_prefix': v.prefix.toUpperCase() || null, 'hospital.address': v.address || null } });
     setSaved(true);
+    notify.success('Settings saved.');
     refresh();
   });
   const ro = !can('settings.manage');
@@ -210,6 +214,7 @@ export function Subscription() {
     setPay(null);
     try {
       const r = await api.post('/subscription/verify', result);
+      notify.success(`Renewed. Invoice ${r.data.invoiceNumber ?? ''} issued.`);
       setMsg({ tone: 'success', text: `Renewed. Invoice ${r.data.invoiceNumber ?? ''} issued.` });
       reload(); refresh();
     } catch (e) { setMsg({ tone: 'error', text: e.message }); }

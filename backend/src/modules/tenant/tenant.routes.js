@@ -26,6 +26,7 @@ router.get('/tenant/me', asyncHandler(async (req, res) => {
       user: { id: user.UserId, email: user.Email, name: user.FullName, phone: user.Phone, isOwner: req.ctx.isOwner, roles: req.ctx.roles },
       tenant: { slug: req.ctx.tenantSlug, name: req.ctx.tenantName, timezone: req.ctx.timezone, currency: req.ctx.currency },
       permissions: [...req.ctx.permissions].sort(),
+      features: [...req.ctx.features].sort(),
       subscription: req.ctx.subscription,
       unreadNotifications: unread.n,
     },

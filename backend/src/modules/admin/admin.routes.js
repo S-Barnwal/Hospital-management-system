@@ -235,6 +235,28 @@ router.patch('/demo-requests/:id',
     res.json({ data: { ok: true } });
   }));
 
+router.delete('/demo-requests/:id', requireSuperAdmin, asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  const n = await db.exec('DELETE FROM hms.DemoRequests WHERE DemoRequestId = @id', { id });
+  if (!n) throw notFound('Demo request not found.');
+  await auditPlatform(req, 'admin.demo_request_deleted', 'demo_request', id);
+  res.json({ data: { ok: true } });
+}));
+
+router.delete('/plans/:id', requireSuperAdmin, asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  const used = await db.one(`SELECT (SELECT COUNT(*) FROM hms.Subscriptions WHERE PlanId = @id) + (SELECT COUNT(*) FROM hms.Payments WHERE PlanId = @id)
+                                  + (SELECT COUNT(*) FROM hms.OnboardingRequests WHERE PlanId = @id) AS n`, { id });
+  if (used.n) return res.status(409).json({ error: { code: 'IN_USE', message: 'Hospitals have bought this plan. Hide it (set inactive) instead of deleting.' } });
+  await withTransaction(async (tx) => {
+    await tx.exec('DELETE FROM hms.PlanFeatures WHERE PlanId = @id', { id });
+    const n = await tx.exec('DELETE FROM hms.Plans WHERE PlanId = @id', { id });
+    if (!n) throw notFound('Plan not found.');
+    await auditPlatform(req, 'admin.plan_deleted', 'plan', id, null, null, tx);
+  });
+  return res.json({ data: { ok: true } });
+}));
+
 router.get('/contact-messages', asyncHandler(async (req, res) => {
   const lq = parseListQuery(req.query, { created: 'CreatedAt' }, 'created');
   const [rows, total] = await db.many(`

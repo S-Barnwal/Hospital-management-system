@@ -56,6 +56,7 @@ export function evaluateTenantAccess({ payload, row, hostSlug, method, path, now
   }
 
   const permissions = new Set(String(row.Permissions || '').split(',').filter(Boolean));
+  const features = new Set(String(row.Features || '').split(',').filter(Boolean));
   return {
     tenantId: row.TenantId,
     tenantSlug: row.Slug,
@@ -67,9 +68,23 @@ export function evaluateTenantAccess({ payload, row, hostSlug, method, path, now
     isOwner: Boolean(row.IsOwner),
     roles: String(row.Roles || '').split(',').filter(Boolean),
     permissions,
+    features,
     subscription: sub,
   };
 }
 
 /** True when ctx holds every listed permission. */
 export const hasAll = (ctx, codes) => codes.every((c) => ctx?.permissions?.has(c));
+
+/**
+ * Plan gate: the hospital's current plan must include the module (hms.PlanFeatures).
+ * Returns 403 FEATURE_NOT_IN_PLAN so the UI can show an upgrade prompt.
+ */
+export const requireFeature = (key) => (req, _res, next) => {
+  if (!req.ctx) return next(unauthorized());
+  if (!req.ctx.features.has(key)) {
+    return next(forbidden('This module is not included in your plan. Upgrade your subscription to use it.', 'FEATURE_NOT_IN_PLAN'));
+  }
+  return next();
+};
+

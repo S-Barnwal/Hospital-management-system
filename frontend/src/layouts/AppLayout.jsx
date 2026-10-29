@@ -7,6 +7,7 @@ import {
 import { useTenantAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Logo.jsx';
 import { Alert, Spinner, cx } from '../components/ui.jsx';
+import Toasts from '../components/Toasts.jsx';
 
 export const APP_NAV = [
   { section: 'Overview' },
@@ -15,13 +16,13 @@ export const APP_NAV = [
   { to: '/app/patients', label: 'Patients', icon: LuUsers, perm: 'patients.read' },
   { to: '/app/appointments', label: 'Appointments', icon: LuCalendarClock, perm: 'appointments.read' },
   { to: '/app/staff', label: 'Doctors & staff', icon: LuUserCog, perm: 'staff.read' },
-  { section: 'Clinical & finance', soon: true },
-  { to: '/app/opd', label: 'OPD', icon: LuStethoscope, perm: 'opd.read', soon: true },
-  { to: '/app/admissions', label: 'Admissions & beds', icon: LuBedDouble, perm: 'ipd.read', soon: true },
-  { to: '/app/billing', label: 'Billing', icon: LuReceipt, perm: 'billing.read', soon: true },
-  { to: '/app/laboratory', label: 'Laboratory', icon: LuFlaskConical, perm: 'lab.read', soon: true },
-  { to: '/app/pharmacy', label: 'Pharmacy', icon: LuPill, perm: 'pharmacy.read', soon: true },
-  { to: '/app/reports', label: 'Reports', icon: LuChartBar, perm: 'reports.read', soon: true },
+  { section: 'Clinical & finance' },
+  { to: '/app/opd', label: 'OPD', icon: LuStethoscope, perm: 'opd.read', feature: 'opd' },
+  { to: '/app/admissions', label: 'Admissions & beds', icon: LuBedDouble, perm: 'ipd.read', feature: 'ipd' },
+  { to: '/app/billing', label: 'Billing', icon: LuReceipt, perm: 'billing.read', feature: 'billing' },
+  { to: '/app/laboratory', label: 'Laboratory', icon: LuFlaskConical, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/pharmacy', label: 'Pharmacy', icon: LuPill, perm: 'pharmacy.read', feature: 'pharmacy' },
+  { to: '/app/reports', label: 'Reports', icon: LuChartBar, perm: 'reports.read', feature: 'reports' },
   { section: 'Administration' },
   { to: '/app/users-roles', label: 'Users & roles', icon: LuShieldCheck, perm: 'users.read' },
   { to: '/app/audit-log', label: 'Audit log', icon: LuHistory, perm: 'audit.read' },
@@ -29,7 +30,7 @@ export const APP_NAV = [
   { to: '/app/subscription', label: 'Subscription', icon: LuCreditCard, perm: 'subscription.read' },
 ];
 
-function Sidebar({ can, onNavigate }) {
+function Sidebar({ can, hasFeature, onNavigate }) {
   const items = APP_NAV.filter((n, i, arr) => {
     if (n.section) {
       // hide a section header when the user can see nothing under it
@@ -49,7 +50,7 @@ function Sidebar({ can, onNavigate }) {
             isActive ? 'bg-white/10 text-white shadow-[inset_3px_0_0_var(--color-gold-500)]' : 'text-forest-100/80 hover:bg-white/5 hover:text-white')}>
           <n.icon className="h-4 w-4 shrink-0" aria-hidden />
           <span className="flex-1">{n.label}</span>
-          {n.soon && <span className="rounded bg-gold-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase text-gold-400">Soon</span>}
+          {n.feature && !hasFeature(n.feature) && <span className="rounded bg-gold-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase text-gold-400">Upgrade</span>}
         </NavLink>
       ))}
     </nav>
@@ -57,7 +58,7 @@ function Sidebar({ can, onNavigate }) {
 }
 
 export default function AppLayout() {
-  const { me, loading, logout, can } = useTenantAuth();
+  const { me, loading, logout, can, hasFeature } = useTenantAuth();
   const [open, setOpen] = useState(false);
   const { pathname } = useLocation();
   const navigate = useNavigate();
@@ -79,7 +80,7 @@ export default function AppLayout() {
           <p className="truncate text-[11px] text-forest-300">{me.tenant.slug}</p>
         </div>
       </div>
-      <Sidebar can={can} onNavigate={() => setOpen(false)} />
+      <Sidebar can={can} hasFeature={hasFeature} onNavigate={() => setOpen(false)} />
       <div className="border-t border-white/10 p-3">
         <button onClick={async () => { await logout(); navigate('/login'); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-forest-100/80 hover:bg-white/5 hover:text-white">
           <LuLogOut className="h-4 w-4" aria-hidden /> Sign out
@@ -89,16 +90,16 @@ export default function AppLayout() {
   );
 
   return (
-    <div className="min-h-screen bg-[#f6f7f3]">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block">{sidebar}</aside>
+    <div className="min-h-screen bg-[#f6f7f3] print:bg-white">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-64 lg:block print:hidden">{sidebar}</aside>
       {open && (
         <div className="fixed inset-0 z-40 lg:hidden">
           <div className="absolute inset-0 bg-forest-950/50" onClick={() => setOpen(false)} aria-hidden />
           <aside className="absolute inset-y-0 left-0 w-72">{sidebar}</aside>
         </div>
       )}
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-white/90 px-4 backdrop-blur sm:px-6">
+      <div className="lg:pl-64 print:pl-0">
+        <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-white/90 px-4 backdrop-blur sm:px-6 print:hidden">
           <button className="rounded-md p-2 lg:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><LuMenu className="h-5 w-5" /></button>
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-sm text-muted">
             <Link to="/app/dashboard" className="hover:text-ink">{me.tenant.name}</Link>
@@ -119,6 +120,7 @@ export default function AppLayout() {
             </div>
           </div>
         </header>
+        <Toasts />
         <main className="px-4 py-6 sm:px-6 lg:px-8">
           {sub?.state === 'grace' && <Alert tone="warning" className="mb-5">Your subscription period has ended — {sub.daysLeft} day(s) of grace left. <Link className="font-semibold underline" to="/app/subscription">Renew now</Link></Alert>}
           {sub?.state === 'expired' && <Alert tone="error" className="mb-5">Subscription expired. Your data is safe but read-only. <Link className="font-semibold underline" to="/app/subscription">Renew to continue</Link></Alert>}
@@ -130,8 +132,15 @@ export default function AppLayout() {
 }
 
 /** Guard for a single page: shows a friendly message instead of a broken page if the role lacks access. */
-export function RequirePerm({ perm, children }) {
-  const { can } = useTenantAuth();
+export function RequirePerm({ perm, feature, children }) {
+  const { can, hasFeature } = useTenantAuth();
+  if (feature && !hasFeature(feature)) {
+    return (
+      <Alert tone="warning" title="Not included in your plan">
+        This module is not part of your current subscription. <Link to="/app/subscription" className="font-semibold underline">Upgrade your plan</Link> to use it.
+      </Alert>
+    );
+  }
   if (!can(perm)) return <Alert tone="warning" title="No access">Your role does not include access to this page. Ask your hospital administrator.</Alert>;
   return children;
 }
