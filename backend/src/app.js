@@ -1,0 +1,103 @@
+import express from 'express';
+import helmet from 'helmet';
+import cors from 'cors';
+import cookieParser from 'cookie-parser';
+import { randomUUID } from 'node:crypto';
+import { config } from './config/env.js';
+import { db } from './db/pool.js';
+import { resolveHostTenant } from './middleware/auth.js';
+import { csrfGuard } from './middleware/csrf.js';
+import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
+import authRoutes from './modules/auth/auth.routes.js';
+import publicRoutes from './modules/public/public.routes.js';
+import onboardingRoutes, { webhookHandler } from './modules/onboarding/onboarding.routes.js';
+import adminRoutes from './modules/admin/admin.routes.js';
+import tenantRoutes from './modules/tenant/tenant.routes.js';
+import dashboardRoutes from './modules/dashboard/dashboard.routes.js';
+import patientRoutes from './modules/patients/patients.routes.js';
+import appointmentRoutes from './modules/appointments/appointments.routes.js';
+import staffRoutes from './modules/staff/staff.routes.js';
+import userRoutes from './modules/users/users.routes.js';
+
+/** Allows the configured origins plus any tenant subdomain of APP_BASE_DOMAIN over https (or http on localhost). */
+export function makeOriginCheck(cfg) {
+  const base = cfg.appBaseDomain;
+  return (origin) => {
+    if (!origin) return true;
+    if (cfg.corsOrigins.includes(origin)) return true;
+    try {
+      const u = new URL(origin);
+      const hostOk = u.hostname === base || u.hostname.endsWith(`.${base}`);
+      const protoOk = u.protocol === 'https:' || (!cfg.isProd && u.protocol === 'http:');
+      return hostOk && protoOk;
+    } catch {
+      return false;
+    }
+  };
+}
+
+export function createApp() {
+  const app = express();
+  app.disable('x-powered-by');
+  if (config.trustProxy) app.set('trust proxy', config.trustProxy);
+
+  app.use((req, res, next) => {
+    req.id = randomUUID();
+    res.set('X-Request-Id', req.id);
+    const started = Date.now();
+    res.on('finish', () => {
+      // Structured access log. Never logs bodies (they may hold patient data or passwords).
+      console.log(JSON.stringify({ level: 'info', requestId: req.id, method: req.method, path: req.path, status: res.statusCode, ms: Date.now() - started }));
+    });
+    next();
+  });
+
+  app.use(helmet({
+    contentSecurityPolicy: { directives: { defaultSrc: ["'none'"], frameAncestors: ["'none'"] } }, // API serves JSON only
+    crossOriginResourcePolicy: { policy: 'same-site' },
+  }));
+
+  const isAllowedOrigin = makeOriginCheck(config);
+  app.use(cors({
+    origin: (origin, cb) => cb(null, isAllowedOrigin(origin)),
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+    allowedHeaders: ['Content-Type', 'X-Requested-With'],
+    maxAge: 600,
+  }));
+
+  // Webhooks need the raw body for signature verification — mount BEFORE express.json().
+  app.post('/api/v1/billing/webhooks/:provider', express.raw({ type: 'application/json', limit: '256kb' }), webhookHandler);
+
+  app.use(express.json({ limit: '200kb' }));
+  app.use(cookieParser());
+  app.use(resolveHostTenant);
+  app.use('/api', csrfGuard({ allowedOrigins: config.corsOrigins, isAllowedOrigin, exemptPaths: ['/v1/billing/webhooks/'] }));
+  app.use('/api', (_req, res, next) => { res.set('Cache-Control', 'no-store'); next(); });
+
+  app.get('/api/health', async (_req, res) => {
+    try {
+      await db.one('SELECT 1 AS ok');
+      res.json({ status: 'ok', db: 'ok', time: new Date().toISOString() });
+    } catch (err) {
+      res.status(503).json({ status: 'degraded', db: 'unreachable', ...(config.isProd ? {} : { reason: `${err.code || ''} ${err.message}` }), time: new Date().toISOString() });
+    }
+  });
+
+  const v1 = express.Router();
+  v1.use('/auth', authRoutes);
+  v1.use('/onboarding', onboardingRoutes);
+  v1.use('/admin', adminRoutes);
+  v1.use('/dashboard', dashboardRoutes);
+  v1.use('/patients', patientRoutes);
+  v1.use('/appointments', appointmentRoutes);
+  v1.use('/hr', staffRoutes);
+  v1.use('/users', userRoutes);
+  v1.use('/', publicRoutes);
+  v1.use('/', tenantRoutes);
+  app.use('/api/v1', v1);
+
+  app.use('/api', notFoundHandler);
+  app.use(errorHandler);
+  return app;
+}
