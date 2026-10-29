@@ -1,0 +1,187 @@
+// Plan purchase → payment → tenant provisioning.
+import { useEffect, useMemo, useState } from 'react';
+import { Link, useNavigate, useSearchParams } from 'react-router-dom';
+import { LuCheck, LuShieldCheck, LuLoaderCircle, LuCircleCheck, LuCircleX } from 'react-icons/lu';
+import { api } from '../../lib/api.js';
+import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
+import { money, BRAND } from '../../lib/format.js';
+import { openRazorpay } from '../../lib/payments.js';
+import { Alert, Button, Card, Input, Select, Skeleton, cx } from '../../components/ui.jsx';
+import SandboxGateway from '../../components/SandboxGateway.jsx';
+import Logo from '../../components/Logo.jsx';
+import { FACILITY_OPTIONS } from './Forms.jsx';
+import { useTenantAuth } from '../../context/AuthContext.jsx';
+
+const slugify = (s) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
+
+function SlugStatus({ slug }) {
+  const debounced = useDebounced(slug, 400);
+  const [state, setState] = useState(null);
+  useEffect(() => {
+    if (!debounced || debounced.length < 3) { setState(null); return; }
+    let live = true;
+    setState({ loading: true });
+    api.get(`/onboarding/slug-availability?slug=${encodeURIComponent(debounced)}`)
+      .then((r) => live && setState(r.data))
+      .catch(() => live && setState(null));
+    return () => { live = false; };
+  }, [debounced]);
+  if (!state) return null;
+  if (state.loading) return <span className="flex items-center gap-1 text-xs text-muted"><LuLoaderCircle className="animate-spin" aria-hidden /> Checking…</span>;
+  return state.available
+    ? <span className="flex items-center gap-1 text-xs text-forest-700"><LuCircleCheck aria-hidden /> Available</span>
+    : <span className="flex items-center gap-1 text-xs text-red-600"><LuCircleX aria-hidden /> {state.reason}</span>;
+}
+
+export default function Register() {
+  const [params, setParams] = useSearchParams();
+  const navigate = useNavigate();
+  const { refresh } = useTenantAuth();
+  const planCode = params.get('plan') || 'professional';
+  const interval = params.get('interval') === 'annual' ? 'annual' : 'monthly';
+  const { data: plans, loading } = useApi(() => api.get('/plans'), []);
+  const plan = useMemo(() => plans?.find((p) => p.code === planCode && !p.contactSales), [plans, planCode]);
+  const [slugTouched, setSlugTouched] = useState(false);
+  const [checkout, setCheckout] = useState(null);
+  const [stage, setStage] = useState('form'); // form | paying | verifying | done
+  const [payError, setPayError] = useState(null);
+
+  const f = useForm({ orgName: '', slug: '', facilityType: 'hospital', city: '', phone: '', ownerName: '', ownerEmail: '', password: '', acceptTerms: false });
+
+  useEffect(() => {
+    if (!slugTouched) f.setValues((v) => ({ ...v, slug: slugify(v.orgName) }));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [f.values.orgName, slugTouched]);
+
+  const verify = async (result, onboardingId) => {
+    setStage('verifying');
+    try {
+      await api.post('/onboarding/verify', { onboardingId, ...result });
+      setStage('done');
+      await refresh();
+      setTimeout(() => navigate('/app/dashboard', { replace: true }), 1200);
+    } catch (e) {
+      setStage('form');
+      setPayError(e.message);
+    }
+  };
+
+  const onSubmit = f.submit(async (v) => {
+    setPayError(null);
+    const res = await api.post('/onboarding/checkout', { ...v, planCode, interval, acceptTerms: v.acceptTerms === true });
+    const co = res.data;
+    setCheckout(co);
+    setStage('paying');
+    if (co.payment.provider === 'razorpay') {
+      try {
+        const result = await openRazorpay(co.payment, { name: BRAND, description: `${co.plan.name} plan (${interval})` });
+        await verify(result, co.onboardingId);
+      } catch (e) {
+        setStage('form');
+        setPayError(e.message);
+      }
+    }
+  });
+
+  if (stage === 'verifying' || stage === 'done') {
+    return (
+      <div className="grid min-h-[70vh] place-items-center px-4">
+        <Card className="max-w-md p-10 text-center">
+          {stage === 'verifying'
+            ? <><LuLoaderCircle className="mx-auto h-10 w-10 animate-spin text-forest-600" aria-hidden /><h1 className="mt-4 font-display text-2xl font-semibold">Verifying payment…</h1><p className="mt-2 text-sm text-muted">Setting up {f.values.orgName}. Please don’t close this tab.</p></>
+            : <><LuCircleCheck className="mx-auto h-12 w-12 text-forest-600" aria-hidden /><h1 className="mt-4 font-display text-2xl font-semibold">Your hospital is ready</h1><p className="mt-2 text-sm text-muted">Taking you to your dashboard…</p></>}
+        </Card>
+      </div>
+    );
+  }
+
+  return (
+    <div className="container-page py-12">
+      <div className="mb-8 flex items-center gap-3 text-sm text-muted">
+        {['Plan', 'Hospital & account', 'Payment', 'Workspace ready'].map((s, i) => (
+          <span key={s} className="flex items-center gap-2">
+            <span className={cx('grid h-6 w-6 place-items-center rounded-full text-xs font-bold', i <= (stage === 'paying' ? 2 : 1) ? 'bg-forest-900 text-gold-400' : 'bg-forest-50 text-forest-800')}>{i + 1}</span>
+            <span className="hidden sm:inline">{s}</span>{i < 3 && <span className="hidden h-px w-6 bg-line sm:block" />}
+          </span>
+        ))}
+      </div>
+
+      <div className="grid gap-8 lg:grid-cols-3">
+        <div className="lg:col-span-2">
+          <Card className="p-6 sm:p-8">
+            <h1 className="font-display text-2xl font-semibold text-forest-950">Create your hospital workspace</h1>
+            <p className="mt-1 text-sm text-muted">Already registered? <Link to="/login" className="font-semibold text-forest-700 underline-offset-2 hover:underline">Sign in</Link></p>
+            <form onSubmit={onSubmit} noValidate className="mt-6 grid gap-5 sm:grid-cols-2">
+              <fieldset className="contents">
+                <legend className="eyebrow sm:col-span-2">Hospital</legend>
+                <Input label="Hospital / clinic name" required {...f.bind('orgName')} error={f.errors.orgName} className="sm:col-span-2" />
+                <div className="sm:col-span-2">
+                  <Input label="Workspace address" required {...f.bind('slug')} onChange={(e) => { setSlugTouched(true); f.setValues((s) => ({ ...s, slug: slugify(e.target.value) })); }}
+                    error={f.errors.slug} hint={`Your staff will sign in at ${f.values.slug || 'your-hospital'}.app.example.com`} />
+                  <div className="mt-1"><SlugStatus slug={f.values.slug} /></div>
+                </div>
+                <Select label="Facility type" options={FACILITY_OPTIONS} {...f.bind('facilityType')} error={f.errors.facilityType} />
+                <Input label="City" {...f.bind('city')} error={f.errors.city} />
+              </fieldset>
+              <fieldset className="contents">
+                <legend className="eyebrow mt-2 sm:col-span-2">Owner account</legend>
+                <Input label="Your full name" required autoComplete="name" {...f.bind('ownerName')} error={f.errors.ownerName} />
+                <Input label="Phone" type="tel" required autoComplete="tel" {...f.bind('phone')} error={f.errors.phone} />
+                <Input label="Work e-mail" type="email" required autoComplete="email" {...f.bind('ownerEmail')} error={f.errors.ownerEmail} />
+                <Input label="Password" type="password" required autoComplete="new-password" {...f.bind('password')} error={f.errors.password} hint="10+ characters with letters and numbers." />
+              </fieldset>
+              <label className="flex items-start gap-3 text-sm sm:col-span-2">
+                <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-line accent-forest-800" checked={f.values.acceptTerms}
+                  onChange={(e) => f.setValues((s) => ({ ...s, acceptTerms: e.target.checked }))} />
+                <span>I agree to the <Link to="/terms" className="font-semibold text-forest-700 underline">Terms</Link>, <Link to="/privacy" className="font-semibold text-forest-700 underline">Privacy Policy</Link> and <Link to="/cancellation" className="font-semibold text-forest-700 underline">subscription policy</Link>.</span>
+              </label>
+              {f.errors.acceptTerms && <p className="-mt-3 text-xs text-red-600 sm:col-span-2">{f.errors.acceptTerms}</p>}
+              {(f.formError || payError) && <Alert tone="error" className="sm:col-span-2">{payError || f.formError}</Alert>}
+              <div className="sm:col-span-2">
+                <Button type="submit" size="lg" loading={f.submitting || stage === 'paying'} disabled={!plan} className="w-full">
+                  {plan ? `Continue to payment · ${money(plan[interval].total, plan.currency)}` : 'Select a plan'}
+                </Button>
+                <p className="mt-3 flex items-center justify-center gap-1.5 text-xs text-muted"><LuShieldCheck className="text-forest-600" aria-hidden /> Your workspace is created only after the payment is verified on our server.</p>
+              </div>
+            </form>
+          </Card>
+        </div>
+
+        <aside>
+          <Card className="sticky top-24 overflow-hidden">
+            <div className="bg-forest-950 p-6 text-white">
+              <Logo light compact />
+              <p className="mt-4 text-xs font-semibold uppercase tracking-[0.18em] text-gold-400">Order summary</p>
+              {loading ? <Skeleton className="mt-3 h-8 w-40 bg-white/10" /> : plan
+                ? <p className="mt-2 font-display text-2xl font-semibold">{plan.name} <span className="text-base font-normal text-forest-100/80">· {interval}</span></p>
+                : <p className="mt-2 text-sm text-gold-200">This plan is not available online. <Link to="/pricing" className="underline">Choose another</Link>.</p>}
+            </div>
+            {plan && (
+              <div className="space-y-3 p-6 text-sm">
+                <div className="flex justify-between"><span className="text-muted">Subtotal</span><span>{money(plan[interval].subtotal, plan.currency)}</span></div>
+                <div className="flex justify-between"><span className="text-muted">GST ({plan.taxRatePercent}%)</span><span>{money(plan[interval].tax, plan.currency)}</span></div>
+                <div className="flex justify-between border-t border-line pt-3 font-semibold text-forest-950"><span>Total payable</span><span>{money(plan[interval].total, plan.currency)}</span></div>
+                <div className="flex gap-2 pt-2">
+                  {['monthly', 'annual'].map((i) => (
+                    <button key={i} type="button" onClick={() => setParams({ plan: planCode, interval: i })}
+                      className={cx('flex-1 rounded-md border px-2 py-1.5 text-xs font-semibold', interval === i ? 'border-forest-800 bg-forest-50 text-forest-900' : 'border-line text-muted')}>{i === 'monthly' ? 'Monthly' : 'Annual'}</button>
+                  ))}
+                </div>
+                <ul className="space-y-1.5 border-t border-line pt-4">
+                  {plan.features.filter((x) => x.included).slice(0, 5).map((x) => <li key={x.key} className="flex gap-2 text-forest-900"><LuCheck className="mt-0.5 text-gold-600" aria-hidden />{x.label}</li>)}
+                </ul>
+              </div>
+            )}
+          </Card>
+        </aside>
+      </div>
+
+      {stage === 'paying' && checkout?.payment.provider === 'sandbox' && (
+        <SandboxGateway payment={checkout.payment}
+          onAuthorised={(r) => verify(r, checkout.onboardingId)}
+          onFailed={(e) => { setStage('form'); setPayError(e.message); }}
+          onClose={() => { setStage('form'); setPayError('Payment was cancelled. You can try again.'); }} />
+      )}
+    </div>
+  );
+}
