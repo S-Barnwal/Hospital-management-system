@@ -1,7 +1,7 @@
 // Shared billing operations. Every function takes a transaction runner and the tenantId from req.ctx.
 import { t } from '../../db/pool.js';
 import { badRequest, conflict, notFound } from '../../utils/errors.js';
-import { computeLine, computeBill } from '../clinical/logic.js';
+import { computeLine, computeBill, balanceDue } from '../clinical/logic.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
 
 /** Locks and returns a bill row of this tenant, or throws 404. */
@@ -62,4 +62,39 @@ export async function finalizeBill(tx, tenantId, billId) {
   await tx.exec(`UPDATE hms.Bills SET Status = 'finalized', BillNumber = @num, FinalizedAt = SYSUTCDATETIME() WHERE TenantId = @tid AND BillId = @id`,
     { tid: tenantId, id: billId, num: number });
   return number;
+}
+
+/** Creates a new, empty draft bill (used when an order should have its own invoice). */
+export async function createDraftBill(tx, ctx, patientId, notes = null) {
+  const row = await tx.one(
+    `INSERT INTO hms.Bills (TenantId, PatientId, Notes, CreatedByUserId) OUTPUT INSERTED.BillId VALUES (@tid, @pid, @notes, @uid)`,
+    { tid: ctx.tenantId, pid: patientId, notes, uid: ctx.userId });
+  return row.BillId;
+}
+
+/**
+ * Records a payment or refund against a finalised bill and returns the receipt number.
+ * body = { amount, method, reference?, reason? }
+ */
+export async function recordBillPayment(tx, ctx, billId, kind, body) {
+  const bill = await lockBill(tx, ctx.tenantId, billId);
+  if (bill.Status !== 'finalized') throw conflict('Payments can only be recorded against a finalised bill.', 'BILL_STATE');
+  const amount = Number(Number(body.amount).toFixed(2));
+  if (!(amount > 0)) throw badRequest('Amount must be greater than zero.');
+  const paid = Number(bill.PaidAmount);
+  const total = Number(bill.Total);
+  if (kind === 'payment' && amount > Number(balanceDue(total, paid))) throw badRequest(`Amount exceeds the balance due (${balanceDue(total, paid)}).`);
+  if (kind === 'refund') {
+    if (!body.reason) throw badRequest('A refund reason is required.');
+    if (amount > paid) throw badRequest(`Refund cannot exceed the amount paid (${paid.toFixed(2)}).`);
+  }
+  const n = await nextSequence(tx, ctx.tenantId, 'receipt');
+  const receipt = formatNumber(kind === 'refund' ? 'RFD' : 'RCT', n);
+  await tx.exec(
+    `INSERT INTO hms.BillPayments (TenantId, BillId, ReceiptNumber, Kind, Amount, Method, Reference, Reason, ReceivedByUserId)
+     VALUES (@tid, @id, @rc, @kind, @amt, @method, @ref, @reason, @uid)`,
+    { tid: ctx.tenantId, id: billId, rc: receipt, kind, amt: t.money(amount.toFixed(2)), method: body.method, ref: body.reference ?? null, reason: body.reason ?? null, uid: ctx.userId });
+  await tx.exec(`UPDATE hms.Bills SET PaidAmount = PaidAmount ${kind === 'refund' ? '-' : '+'} @amt WHERE TenantId = @tid AND BillId = @id`,
+    { tid: ctx.tenantId, id: billId, amt: t.money(amount.toFixed(2)) });
+  return { receipt, amount };
 }

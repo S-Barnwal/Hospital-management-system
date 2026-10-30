@@ -37,7 +37,10 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
       (SELECT COUNT(*) FROM (SELECT m.MedicineId, m.ReorderLevel,
           ISNULL((SELECT SUM(QuantityOnHand) FROM hms.StockBatches sb WHERE sb.TenantId = m.TenantId AND sb.MedicineId = m.MedicineId AND sb.ExpiryDate >= CAST(@start AS DATE)), 0) AS stock
         FROM hms.Medicines m WHERE m.TenantId = @tid AND m.IsActive = 1) x WHERE x.stock <= x.ReorderLevel) AS lowStock,
-      (SELECT COUNT(*) FROM hms.LabOrders WHERE TenantId = @tid AND Status IN ('ordered','sample_collected','completed')) AS pendingLab;
+      (SELECT COUNT(*) FROM hms.LabOrders WHERE TenantId = @tid AND Status IN ('ordered','sample_collected','completed')) AS pendingLab,
+      (SELECT COUNT(*) FROM hms.LabSamples s JOIN hms.LabOrders o ON o.TenantId = s.TenantId AND o.LabOrderId = s.LabOrderId
+        WHERE s.TenantId = @tid AND s.Status IN ('pending','rejected') AND o.Status <> 'cancelled') AS pendingSamples,
+      (SELECT ISNULL(SUM(Amount), 0) FROM hms.Expenses WHERE TenantId = @tid AND ExpenseDate >= CAST(DATEADD(MINUTE, @offset, @monthStart) AS DATE)) AS expensesThisMonth;
     SELECT Status, COUNT(*) AS n FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @start AND StartAt < @end GROUP BY Status;
     SELECT CAST(DATEADD(MINUTE, @offset, StartAt) AS DATE) AS day, COUNT(*) AS n
       FROM hms.Appointments WHERE TenantId = @tid AND StartAt >= @trendStart AND StartAt < @end AND Status <> 'cancelled'
@@ -90,7 +93,8 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
         pendingPayments: req.ctx.permissions.has('billing.read') && req.ctx.features.has('billing') ? { bills: c.pendingBills, amount: c.pendingAmount } : null,
         collections: req.ctx.permissions.has('billing.read') && req.ctx.features.has('billing') ? { today: c.collectedToday, month: c.collectedThisMonth } : null,
         lowStock: req.ctx.permissions.has('pharmacy.read') && req.ctx.features.has('pharmacy') ? c.lowStock : null,
-        pendingLab: req.ctx.permissions.has('lab.read') && req.ctx.features.has('laboratory') ? c.pendingLab : null,
+        pendingLab: req.ctx.permissions.has('lab.read') && req.ctx.features.has('laboratory') ? { orders: c.pendingLab, samples: c.pendingSamples } : null,
+        expensesThisMonth: req.ctx.permissions.has('expenses.read') && req.ctx.features.has('billing') ? c.expensesThisMonth : null,
       },
       appointmentTrend: canAppts ? series : [],
       upcomingAppointments: canAppts ? upcoming : [],

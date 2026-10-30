@@ -28,6 +28,15 @@ export async function seedDefaultLabTests(tx, tenantId) {
   }
 }
 
+export const DEFAULT_EXPENSE_CATEGORIES = ['Salaries', 'Rent', 'Electricity & utilities', 'Lab reagents & consumables', 'Equipment maintenance', 'Medical supplies', 'Marketing', 'Miscellaneous'];
+
+export async function seedDefaultExpenseCategories(tx, tenantId) {
+  for (const name of DEFAULT_EXPENSE_CATEGORIES) {
+    await tx.exec(`IF NOT EXISTS (SELECT 1 FROM hms.ExpenseCategories WHERE TenantId = @tid AND Name = @name)
+                   INSERT INTO hms.ExpenseCategories (TenantId, Name) VALUES (@tid, @name)`, { tid: tenantId, name });
+  }
+}
+
 export const DEFAULT_DEPARTMENTS = ['General Medicine', 'Paediatrics', 'Gynaecology', 'Orthopaedics', 'Emergency'];
 
 /** Copies the default role templates (with permissions) into a tenant. Returns { [roleCode]: RoleId }. */
@@ -89,6 +98,7 @@ export async function provisionTenant(tx, o, plan, payment, actor = { type: 'sys
     await tx.exec('INSERT INTO hms.Departments (TenantId, Name) VALUES (@tid, @name)', { tid: tenantId, name });
   }
   await seedDefaultLabTests(tx, tenantId);
+  await seedDefaultExpenseCategories(tx, tenantId);
 
   const start = new Date();
   const end = addInterval(start, plan.interval);

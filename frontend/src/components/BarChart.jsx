@@ -1,5 +1,5 @@
 /** Accessible, dependency-free bar chart for small daily series. */
-export default function BarChart({ data, valueKey, labelKey = 'date', height = 180, label }) {
+export default function BarChart({ data, valueKey, labelKey = 'date', height = 180, label, lastLabel = 'Today' }) {
   const max = Math.max(1, ...data.map((d) => d[valueKey]));
   const w = 100 / Math.max(1, data.length);
   return (
@@ -19,7 +19,7 @@ export default function BarChart({ data, valueKey, labelKey = 'date', height = 1
         })}
       </svg>
       <div className="mt-2 flex justify-between text-[11px] text-muted">
-        <span>{data[0]?.[labelKey]?.slice(5)}</span><span>{data[Math.floor(data.length / 2)]?.[labelKey]?.slice(5)}</span><span>Today</span>
+        <span>{data[0]?.[labelKey]?.slice(5)}</span><span>{data[Math.floor(data.length / 2)]?.[labelKey]?.slice(5)}</span><span>{lastLabel}</span>
       </div>
       <figcaption className="sr-only">{label}: {data.map((d) => `${d[labelKey]} ${d[valueKey]}`).join(', ')}</figcaption>
     </figure>

@@ -140,3 +140,18 @@ describe('Slugs & host resolution', () => {
     assert.ok(validateSlug('ab'));
   });
 });
+
+describe('Friendly validation messages', async () => {
+  const { z } = await import('zod');
+  const { friendlyMessage } = await import('../../src/middleware/validate.js');
+  const msgs = (schema, value) => schema.safeParse(value).error.issues.map(friendlyMessage);
+  test('replaces zod defaults with plain language', () => {
+    const s = z.object({ password: z.string().min(1), email: z.string().email(), name: z.string().min(3), type: z.enum(['a', 'b']), n: z.number().max(5) }).strict();
+    const m = msgs(s, { password: '', email: 'x', name: 'ab', type: 'c', n: 9 });
+    assert.deepEqual(m, ['This field is required.', 'Enter a valid e-mail address, e.g. name@hospital.com.', 'Enter at least 3 characters.', 'Please choose one of the options.', 'Must be 5 or less.']);
+    assert.deepEqual(msgs(z.object({ a: z.string() }), {}), ['This field is required.']);
+  });
+  test('keeps messages written in the schema', () => {
+    assert.deepEqual(msgs(z.string().regex(/^\d+$/, 'Enter a valid phone number'), 'x'), ['Enter a valid phone number']);
+  });
+});

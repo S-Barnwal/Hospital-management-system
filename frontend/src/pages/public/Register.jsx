@@ -9,9 +9,10 @@ import { openRazorpay } from '../../lib/payments.js';
 import { Alert, Button, Card, Input, Select, Skeleton, cx } from '../../components/ui.jsx';
 import SandboxGateway from '../../components/SandboxGateway.jsx';
 import Logo from '../../components/Logo.jsx';
-import { FACILITY_OPTIONS } from './Forms.jsx';
+import { FACILITY_OPTIONS, planSuggestion } from '../../lib/facility.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 
+const BASE_DOMAIN = import.meta.env?.VITE_APP_BASE_DOMAIN || '';
 const slugify = (s) => s.toLowerCase().normalize('NFKD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40);
 
 function SlugStatus({ slug }) {
@@ -47,6 +48,8 @@ export default function Register() {
   const [payError, setPayError] = useState(null);
 
   const f = useForm({ orgName: '', slug: '', facilityType: 'hospital', city: '', phone: '', ownerName: '', ownerEmail: '', password: '', acceptTerms: false });
+
+  const suggestion = useMemo(() => planSuggestion(plans, plan, f.values.facilityType), [plans, plan, f.values.facilityType]);
 
   useEffect(() => {
     if (!slugTouched) f.setValues((v) => ({ ...v, slug: slugify(v.orgName) }));
@@ -117,11 +120,19 @@ export default function Register() {
                 <Input label="Hospital / clinic name" required {...f.bind('orgName')} error={f.errors.orgName} className="sm:col-span-2" />
                 <div className="sm:col-span-2">
                   <Input label="Workspace address" required {...f.bind('slug')} onChange={(e) => { setSlugTouched(true); f.setValues((s) => ({ ...s, slug: slugify(e.target.value) })); }}
-                    error={f.errors.slug} hint={`Your staff will sign in at ${f.values.slug || 'your-hospital'}.app.example.com`} />
+                    error={f.errors.slug} hint={BASE_DOMAIN && BASE_DOMAIN !== 'localhost' ? `Your staff will sign in at ${f.values.slug || 'your-hospital'}.${BASE_DOMAIN}` : 'Your staff type this on the login page. Letters, numbers and dashes only.'} />
                   <div className="mt-1"><SlugStatus slug={f.values.slug} /></div>
                 </div>
                 <Select label="Facility type" options={FACILITY_OPTIONS} {...f.bind('facilityType')} error={f.errors.facilityType} />
                 <Input label="City" {...f.bind('city')} error={f.errors.city} />
+                {suggestion && (
+                  <Alert tone="warning" className="sm:col-span-2" title={`The ${plan.name} plan does not include: ${suggestion.missing.join(', ')}`}>
+                    Most {FACILITY_OPTIONS.find((o) => o.value === f.values.facilityType)?.label.toLowerCase()}s need {suggestion.missing.length > 1 ? 'these modules' : 'this module'}.
+                    {suggestion.plan ? (
+                      <> <button type="button" className="font-semibold underline" onClick={() => setParams({ plan: suggestion.plan.code, interval })}>Switch to {suggestion.plan.name} ({money(suggestion.plan[interval].total, suggestion.plan.currency)}/{interval === 'annual' ? 'year' : 'month'})</button> or continue with {plan.name} — you can upgrade later.</>
+                    ) : ' You can upgrade later from Subscription.'}
+                  </Alert>
+                )}
               </fieldset>
               <fieldset className="contents">
                 <legend className="eyebrow mt-2 sm:col-span-2">Owner account</legend>

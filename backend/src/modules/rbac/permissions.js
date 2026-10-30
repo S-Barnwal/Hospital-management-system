@@ -38,6 +38,9 @@ export const PERMISSIONS = [
   ['pharmacy.configure', 'pharmacy', 'Manage medicines and suppliers'],
   ['reports.read', 'reports', 'View reports'],
   ['reports.export', 'reports', 'Export reports as CSV'],
+  ['expenses.read', 'expenses', 'View expenses'],
+  ['expenses.write', 'expenses', 'Record, edit and delete expenses'],
+  ['backups.manage', 'backups', 'Download a full export of hospital data'],
 ];
 
 export const ALL_CODES = PERMISSIONS.map(([code]) => code);
@@ -51,7 +54,7 @@ export const ROLE_TEMPLATES = [
     permissions: ALL_CODES.filter((c) => c !== 'subscription.manage'),
   },
   { code: 'manager', name: 'Hospital Manager', description: 'Operational oversight and reports.',
-    permissions: [...pick('dashboard', 'reports', 'audit'), 'patients.read', 'appointments.read', 'staff.read', 'ipd.read', 'billing.read', 'subscription.read'] },
+    permissions: [...pick('dashboard', 'reports', 'audit'), 'patients.read', 'appointments.read', 'staff.read', 'ipd.read', 'billing.read', 'lab.read', 'expenses.read', 'subscription.read'] },
   { code: 'receptionist', name: 'Receptionist', description: 'Front desk: registration and appointments.',
     permissions: ['dashboard.view', 'patients.read', 'patients.write', 'appointments.read', 'appointments.write', 'staff.read', 'ipd.read', 'billing.read', 'billing.write'] },
   { code: 'doctor', name: 'Doctor', description: 'Consultations and clinical records.',
@@ -63,5 +66,5 @@ export const ROLE_TEMPLATES = [
   { code: 'pharmacist', name: 'Pharmacist', description: 'Pharmacy and stock.',
     permissions: ['dashboard.view', 'patients.read', 'pharmacy.read', 'pharmacy.write', 'pharmacy.configure', 'billing.read'] },
   { code: 'accountant', name: 'Accountant', description: 'Bills, payments and financial reports.',
-    permissions: ['dashboard.view', 'patients.read', 'billing.read', 'billing.write', 'billing.refund', 'reports.read', 'reports.export', 'subscription.read'] },
+    permissions: ['dashboard.view', 'patients.read', 'billing.read', 'billing.write', 'billing.refund', 'reports.read', 'reports.export', 'expenses.read', 'expenses.write', 'lab.read', 'subscription.read'] },
 ];

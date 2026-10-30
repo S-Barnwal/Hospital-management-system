@@ -72,3 +72,18 @@ All require a hospital session, the module in the plan (`FEATURE_NOT_IN_PLAN` ot
 | DELETE `/hr/staff/:id`, `/hr/departments/:id`, `/users/:id`, `/admin/plans/:id`, `/admin/demo-requests/:id` | staff.write / departments.manage / users.manage / super_admin |
 
 Deletion rules: master data (departments, beds, wards, tests, medicines, suppliers, unused staff/plans) can be deleted only when unused, otherwise `409 IN_USE` with advice to deactivate. Patients are archived, appointments/lab orders/bills are cancelled, finalised consultations and invoices are permanent.
+
+## Laboratory extensions, payments register, expenses, analytics, backups (migration 005)
+
+| Endpoint | Permission (feature) |
+|---|---|
+| GET `/lab/departments`; GET `/lab/tests?q&department&all`; GET `/lab/packages?q&all`; GET `/lab/packages/:id`; GET `/lab/referrals` | lab.read (laboratory) |
+| POST/PUT/DELETE `/lab/tests[/:id]`, `/lab/packages[/:id]`, `/lab/referrals[/:id]` | lab.configure |
+| GET `/lab/tests/:id/prices`, `/lab/packages/:id/prices` · POST same `{ price, reason }` | lab.read · lab.configure |
+| POST `/lab/orders` `{ patientId, testIds[], packageIds[], referralDoctorId?, discount, addToBill, payment?{amount,method} }` → own finalised invoice + optional receipt (OPD-linked orders go on the patient's draft bill) | lab.write (+ billing.write for billing) |
+| GET `/lab/orders?status=a,b&paymentStatus&q&referralDoctorId` → rows include `net, paid, balance, paymentStatus` | lab.read |
+| GET `/lab/samples?status&q`; POST `/lab/samples/:id/collect|receive|reject` `{ reason? }` (order status follows its samples) | lab.read / lab.write |
+| GET `/billing/payments?from&to&method&kind&q` (meta: payments, refunds, net) | billing.read (billing) |
+| GET/POST `/expenses`, PUT/DELETE `/expenses/:id`; GET/POST `/expenses/categories`, PUT/DELETE `/expenses/categories/:id` | expenses.read / expenses.write (billing) |
+| GET `/analytics?from&to` | reports.read (reports) |
+| GET `/backups` (history), GET `/backups/export` (JSON download of this tenant's rows; secrets excluded; 3/min) | backups.manage (all plans; allowed while expired) |

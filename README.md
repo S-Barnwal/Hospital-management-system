@@ -1,5 +1,7 @@
 # MediCore HMS — Multi-tenant Hospital Management SaaS
 
+> 📘 **New here? Read the plain-language guide in [`documentation/`](documentation/README.md)** — what the project is, how it works, setup, and every screen explained.
+
 React (Vite) + Node.js/Express + **Microsoft SQL Server**. One platform, many hospitals. Each hospital gets its own data, users, roles and its own workspace address.
 
 ```
@@ -21,11 +23,12 @@ backend/                 Express API (ES modules, Node ≥ 22.9)
                          appointments, staff, users, rbac
   tests/unit/            36 tests, no database needed
   tests/integration/     tenant-isolation & payment idempotency tests (need a SQL Server TEST database)
-database/migrations/     001_platform.sql, 002_hospital_core.sql, 003_seed_plans.sql
+database/migrations/     001_platform … 005_lab_finance.sql (run in order by npm run db:migrate)
 frontend/                React 19 + Vite + Tailwind v4 + motion
   src/pages/public/      Home, Features, Pricing, Register (checkout), Book a demo, Contact, About, FAQ, legal, auth
   src/pages/app/         Dashboard, Patients, Appointments, Doctors & staff, Users & roles, Settings, Subscription, Audit log
   src/pages/admin/       Overview, Tenants, Plans, Subscriptions, Payments, Demo requests, Messages, Audit logs, Settings
+documentation/           PLAIN-LANGUAGE GUIDE for everyone — start at documentation/README.md
 docs/                    ARCHITECTURE.md (ER diagram, tenancy), API.md, SECURITY.md, FEATURES.md, DEPLOYMENT.md
 ```
 

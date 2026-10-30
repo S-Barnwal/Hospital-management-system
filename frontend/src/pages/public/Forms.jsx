@@ -6,10 +6,8 @@ import { useApi, useForm } from '../../lib/hooks.js';
 import { Alert, Button, Card, Input, Select, Textarea } from '../../components/ui.jsx';
 import { PageHero } from './InfoPages.jsx';
 
-export const FACILITY_OPTIONS = [
-  { value: 'clinic', label: 'Clinic' }, { value: 'hospital', label: 'Hospital' }, { value: 'multi_specialty', label: 'Multi-specialty hospital' },
-  { value: 'diagnostic_centre', label: 'Diagnostic centre' }, { value: 'nursing_home', label: 'Nursing home' }, { value: 'other', label: 'Other' },
-];
+export { FACILITY_OPTIONS } from '../../lib/facility.js';
+import { FACILITY_OPTIONS } from '../../lib/facility.js';
 
 /** Hidden honeypot field — real users never fill it; simple bots do. */
 const Honeypot = ({ bind }) => (

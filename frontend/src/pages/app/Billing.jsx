@@ -61,7 +61,7 @@ export default function Billing() {
   );
 }
 
-function PaymentModal({ bill, kind, onClose, onDone }) {
+export function PaymentModal({ bill, kind, onClose, onDone }) {
   const max = kind === 'refund' ? Number(bill.paid) : Number(bill.balance);
   const f = useForm({ amount: max.toFixed(2), method: 'cash', reference: '', reason: '' });
   const save = f.submit(async (v) => {

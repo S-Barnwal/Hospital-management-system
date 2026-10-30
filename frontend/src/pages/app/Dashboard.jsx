@@ -4,6 +4,7 @@ import { LuUsers, LuCalendarClock, LuStethoscope, LuUserCog, LuBedDouble, LuRece
 import { notify } from '../../lib/toast.js';
 import { api } from '../../lib/api.js';
 import { useApi } from '../../lib/hooks.js';
+import { profileFor } from '../../lib/facility.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { Alert, Button, Card, EmptyState, PageHeader, Skeleton, StatCard, StatusBadge } from '../../components/ui.jsx';
 import BarChart from '../../components/BarChart.jsx';
@@ -13,6 +14,9 @@ const fmt = (n) => (n === null || n === undefined ? '—' : new Intl.NumberForma
 
 export default function Dashboard() {
   const { me, can } = useTenantAuth();
+  const hidden = profileFor(me.tenant.facilityType).hide;
+  const showOpd = !hidden.includes('/app/opd');
+  const showBeds = !hidden.includes('/app/admissions');
   const { data, loading, error } = useApi(() => api.get('/dashboard/summary'), []);
   const w = data?.widgets;
   const tz = me.tenant.timezone;
@@ -48,17 +52,18 @@ export default function Dashboard() {
           hint={w?.newPatientsThisMonth != null ? `${fmt(w.newPatientsThisMonth)} new this month` : undefined} />
         <StatCard label="Today’s appointments" icon={LuCalendarClock} loading={loading} value={fmt(w?.todaysAppointments?.total)} unavailable={w && !w.todaysAppointments}
           hint={w?.todaysAppointments ? `${fmt(w.todaysAppointments.byStatus.checked_in ?? 0)} checked in · ${fmt(w.todaysAppointments.byStatus.completed ?? 0)} completed` : undefined} />
-        <StatCard label="OPD visits completed today" icon={LuStethoscope} loading={loading} value={fmt(w?.opdVisitsToday)} unavailable={w && w.opdVisitsToday === null} />
+        {showOpd && <StatCard label="OPD visits completed today" icon={LuStethoscope} loading={loading} value={fmt(w?.opdVisitsToday)} unavailable={w && w.opdVisitsToday === null} />}
         <StatCard label="Doctors / other staff" icon={LuUserCog} loading={loading} value={w && w.doctors !== null ? `${fmt(w.doctors)} / ${fmt(w.staff)}` : '—'} unavailable={w && w.doctors === null} />
       </div>
 
       <div className="mt-4 grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        {w?.beds && <StatCard label="Occupied beds" icon={LuBedDouble} value={`${fmt(w.beds.occupied)} / ${fmt(w.beds.total)}`} hint={w.beds.total ? `${Math.round((w.beds.occupied / w.beds.total) * 100)}% occupancy` : 'No beds set up yet'} />}
+        {showBeds && w?.beds && <StatCard label="Occupied beds" icon={LuBedDouble} value={`${fmt(w.beds.occupied)} / ${fmt(w.beds.total)}`} hint={w.beds.total ? `${Math.round((w.beds.occupied / w.beds.total) * 100)}% occupancy` : 'No beds set up yet'} />}
         {w?.collections && <StatCard label="Collected today" icon={LuIndianRupee} value={money(w.collections.today)} hint={`${money(w.collections.month)} this month (net of refunds)`} />}
         {w?.pendingPayments && <StatCard label="Pending payments" icon={LuReceipt} value={money(w.pendingPayments.amount)} hint={`${fmt(w.pendingPayments.bills)} unpaid bill(s)`} />}
         {w && w.lowStock !== null && w.lowStock !== undefined && <StatCard label="Low-stock medicines" icon={LuPill} value={fmt(w.lowStock)} hint="At or below reorder level" />}
-        {w && w.pendingLab !== null && w.pendingLab !== undefined && <StatCard label="Lab orders pending" icon={LuFlaskConical} value={fmt(w.pendingLab)} hint="Not yet verified" />}
-        {w && w.consultationsToday !== null && w.consultationsToday !== undefined && <StatCard label="Consultations finalised today" icon={LuStethoscope} value={fmt(w.consultationsToday)} />}
+        {w?.pendingLab && <StatCard label="Lab orders pending" icon={LuFlaskConical} value={fmt(w.pendingLab.orders)} hint={`${fmt(w.pendingLab.samples)} sample(s) to collect · not yet verified`} />}
+        {w && w.expensesThisMonth !== null && w.expensesThisMonth !== undefined && <StatCard label="Expenses this month" icon={LuReceipt} value={money(w.expensesThisMonth)} hint="Recorded under Expenses" />}
+        {showOpd && w && w.consultationsToday !== null && w.consultationsToday !== undefined && <StatCard label="Consultations finalised today" icon={LuStethoscope} value={fmt(w.consultationsToday)} />}
       </div>
 
       <div className="mt-6 grid grid-cols-1 gap-6 xl:grid-cols-3">

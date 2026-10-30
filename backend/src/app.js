@@ -24,6 +24,9 @@ import billingRoutes from './modules/billing/billing.routes.js';
 import labRoutes from './modules/lab/lab.routes.js';
 import pharmacyRoutes from './modules/pharmacy/pharmacy.routes.js';
 import reportRoutes from './modules/reports/reports.routes.js';
+import expenseRoutes from './modules/expenses/expenses.routes.js';
+import analyticsRoutes from './modules/analytics/analytics.routes.js';
+import backupRoutes from './modules/backups/backups.routes.js';
 
 /** Allows the configured origins plus any tenant subdomain of APP_BASE_DOMAIN over https (or http on localhost). */
 export function makeOriginCheck(cfg) {
@@ -105,6 +108,9 @@ export function createApp() {
   v1.use('/lab', labRoutes);
   v1.use('/pharmacy', pharmacyRoutes);
   v1.use('/reports', reportRoutes);
+  v1.use('/expenses', expenseRoutes);
+  v1.use('/analytics', analyticsRoutes);
+  v1.use('/backups', backupRoutes);
   v1.use('/', publicRoutes);
   v1.use('/', tenantRoutes);
   app.use('/api/v1', v1);

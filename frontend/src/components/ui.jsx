@@ -87,6 +87,8 @@ export const STATUS_TONE = {
   active: 'green', scheduled: 'blue', checked_in: 'gold', completed: 'green', cancelled: 'red', no_show: 'gray',
   suspended: 'red', deactivated: 'gray', pending: 'gold', paid: 'green', failed: 'red', created: 'gray', refunded: 'gray',
   new: 'gold', contacted: 'blue', closed: 'gray', disabled: 'gray', expired: 'red', grace: 'gold', past_due: 'gold',
+  unpaid: 'red', partial: 'gold', unbilled: 'gray', on_bill: 'blue', collected: 'blue', received: 'green', rejected: 'red',
+  ordered: 'gray', sample_collected: 'blue', verified: 'green', inactive: 'gray',
 };
 export const StatusBadge = ({ status }) => <Badge tone={STATUS_TONE[status] || 'gray'}>{String(status || '').replace(/_/g, ' ')}</Badge>;
 

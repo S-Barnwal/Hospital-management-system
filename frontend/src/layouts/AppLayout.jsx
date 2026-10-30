@@ -3,11 +3,13 @@ import { NavLink, Outlet, Navigate, useLocation, useNavigate, Link } from 'react
 import {
   LuLayoutDashboard, LuUsers, LuCalendarClock, LuStethoscope, LuUserCog, LuBedDouble, LuReceipt, LuFlaskConical, LuPill,
   LuChartBar, LuShieldCheck, LuSettings, LuCreditCard, LuLogOut, LuMenu, LuHistory, LuBell, LuChevronRight,
+  LuTestTubes, LuClipboardCheck, LuPackage, LuListChecks, LuUserRound, LuWallet, LuReceiptText, LuChartLine, LuDatabaseBackup,
 } from 'react-icons/lu';
 import { useTenantAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Logo.jsx';
 import { Alert, Spinner, cx } from '../components/ui.jsx';
 import Toasts from '../components/Toasts.jsx';
+import { arrangeNav } from '../lib/facility.js';
 
 export const APP_NAV = [
   { section: 'Overview' },
@@ -16,22 +18,34 @@ export const APP_NAV = [
   { to: '/app/patients', label: 'Patients', icon: LuUsers, perm: 'patients.read' },
   { to: '/app/appointments', label: 'Appointments', icon: LuCalendarClock, perm: 'appointments.read' },
   { to: '/app/staff', label: 'Doctors & staff', icon: LuUserCog, perm: 'staff.read' },
-  { section: 'Clinical & finance' },
+  { section: 'Clinical' },
   { to: '/app/opd', label: 'OPD', icon: LuStethoscope, perm: 'opd.read', feature: 'opd' },
   { to: '/app/admissions', label: 'Admissions & beds', icon: LuBedDouble, perm: 'ipd.read', feature: 'ipd' },
-  { to: '/app/billing', label: 'Billing', icon: LuReceipt, perm: 'billing.read', feature: 'billing' },
-  { to: '/app/laboratory', label: 'Laboratory', icon: LuFlaskConical, perm: 'lab.read', feature: 'laboratory' },
   { to: '/app/pharmacy', label: 'Pharmacy', icon: LuPill, perm: 'pharmacy.read', feature: 'pharmacy' },
+  { section: 'Laboratory' },
+  { to: '/app/laboratory', label: 'Lab orders', icon: LuFlaskConical, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/lab-samples', label: 'Samples', icon: LuTestTubes, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/lab-results', label: 'Results & reports', icon: LuClipboardCheck, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/lab-tests', label: 'Tests', icon: LuListChecks, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/lab-packages', label: 'Packages', icon: LuPackage, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/referral-doctors', label: 'Referral doctors', icon: LuUserRound, perm: 'lab.read', feature: 'laboratory' },
+  { section: 'Finance' },
+  { to: '/app/billing', label: 'Billing', icon: LuReceipt, perm: 'billing.read', feature: 'billing' },
+  { to: '/app/payments', label: 'Payments', icon: LuWallet, perm: 'billing.read', feature: 'billing' },
+  { to: '/app/expenses', label: 'Expenses', icon: LuReceiptText, perm: 'expenses.read', feature: 'billing' },
+  { section: 'Insights' },
   { to: '/app/reports', label: 'Reports', icon: LuChartBar, perm: 'reports.read', feature: 'reports' },
+  { to: '/app/analytics', label: 'Analytics', icon: LuChartLine, perm: 'reports.read', feature: 'reports' },
   { section: 'Administration' },
   { to: '/app/users-roles', label: 'Users & roles', icon: LuShieldCheck, perm: 'users.read' },
   { to: '/app/audit-log', label: 'Audit log', icon: LuHistory, perm: 'audit.read' },
+  { to: '/app/backups', label: 'Backups', icon: LuDatabaseBackup, perm: 'backups.manage' },
   { to: '/app/settings', label: 'Settings', icon: LuSettings, perm: 'settings.read' },
   { to: '/app/subscription', label: 'Subscription', icon: LuCreditCard, perm: 'subscription.read' },
 ];
 
-function Sidebar({ can, hasFeature, onNavigate }) {
-  const items = APP_NAV.filter((n, i, arr) => {
+function Sidebar({ can, hasFeature, onNavigate, facilityType }) {
+  const items = arrangeNav(APP_NAV, facilityType).filter((n, i, arr) => {
     if (n.section) {
       // hide a section header when the user can see nothing under it
       const next = arr.slice(i + 1);
@@ -80,7 +94,7 @@ export default function AppLayout() {
           <p className="truncate text-[11px] text-forest-300">{me.tenant.slug}</p>
         </div>
       </div>
-      <Sidebar can={can} hasFeature={hasFeature} onNavigate={() => setOpen(false)} />
+      <Sidebar can={can} hasFeature={hasFeature} facilityType={me.tenant.facilityType} onNavigate={() => setOpen(false)} />
       <div className="border-t border-white/10 p-3">
         <button onClick={async () => { await logout(); navigate('/login'); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-forest-100/80 hover:bg-white/5 hover:text-white">
           <LuLogOut className="h-4 w-4" aria-hidden /> Sign out

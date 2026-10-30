@@ -1,6 +1,7 @@
 // Tenant-level account endpoints: who am I, hospital settings, subscription & renewal.
 // tenantId ALWAYS comes from req.ctx (server-side session), never from the request.
 import { Router } from 'express';
+import { FACILITY_TYPES } from '../../utils/constants.js';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { requireTenant, requirePermission } from '../../middleware/auth.js';
@@ -19,12 +20,13 @@ router.use(['/tenant', '/settings', '/subscription', '/notifications', '/audit-l
 router.get('/tenant/me', asyncHandler(async (req, res) => {
   const user = await db.one('SELECT UserId, Email, FullName, Phone FROM hms.Users WHERE UserId = @uid AND TenantId = @tid',
     { uid: req.ctx.userId, tid: req.ctx.tenantId });
+  const facility = await db.one('SELECT FacilityType FROM hms.Tenants WHERE TenantId = @tid', { tid: req.ctx.tenantId });
   const unread = await db.one('SELECT COUNT(*) AS n FROM hms.Notifications WHERE TenantId = @tid AND (UserId IS NULL OR UserId = @uid) AND IsRead = 0',
     { tid: req.ctx.tenantId, uid: req.ctx.userId });
   res.json({
     data: {
       user: { id: user.UserId, email: user.Email, name: user.FullName, phone: user.Phone, isOwner: req.ctx.isOwner, roles: req.ctx.roles },
-      tenant: { slug: req.ctx.tenantSlug, name: req.ctx.tenantName, timezone: req.ctx.timezone, currency: req.ctx.currency },
+      tenant: { slug: req.ctx.tenantSlug, name: req.ctx.tenantName, timezone: req.ctx.timezone, currency: req.ctx.currency, facilityType: facility?.FacilityType || null },
       permissions: [...req.ctx.permissions].sort(),
       features: [...req.ctx.features].sort(),
       subscription: req.ctx.subscription,
@@ -50,6 +52,7 @@ router.put('/settings', requirePermission('settings.manage'),
     city: z.string().trim().max(100).nullable().optional(),
     state: z.string().trim().max(100).nullable().optional(),
     timezone: z.string().refine(isValidTimeZone, 'Unknown timezone'),
+    facilityType: z.enum(FACILITY_TYPES).nullable().optional(),
     settings: z.record(z.enum(ALLOWED_SETTINGS), z.string().trim().max(300).nullable()).optional(),
   }).strict()),
   asyncHandler(async (req, res) => {
@@ -58,9 +61,9 @@ router.put('/settings', requirePermission('settings.manage'),
       throw badRequest('Patient number prefix must be 1–6 capital letters or digits.');
     }
     await withTransaction(async (tx) => {
-      await tx.exec(`UPDATE hms.Tenants SET Name = @name, Email = @email, Phone = @phone, City = @city, State = @state, Timezone = @tz, UpdatedAt = SYSUTCDATETIME()
+      await tx.exec(`UPDATE hms.Tenants SET Name = @name, Email = @email, Phone = @phone, City = @city, State = @state, Timezone = @tz, FacilityType = CASE WHEN @setFt = 1 THEN @ft ELSE FacilityType END, UpdatedAt = SYSUTCDATETIME()
                      WHERE TenantId = @tid`,
-      { tid: req.ctx.tenantId, name: b.name, email: b.email ?? null, phone: b.phone ?? null, city: b.city ?? null, state: b.state ?? null, tz: b.timezone });
+      { tid: req.ctx.tenantId, name: b.name, email: b.email ?? null, phone: b.phone ?? null, city: b.city ?? null, state: b.state ?? null, tz: b.timezone, setFt: b.facilityType !== undefined, ft: b.facilityType ?? null });
       for (const [k, v] of Object.entries(b.settings || {})) {
         await tx.exec(`MERGE hms.TenantSettings AS tgt USING (SELECT @tid AS TenantId, @k AS SettingKey) AS src
                          ON tgt.TenantId = src.TenantId AND tgt.SettingKey = src.SettingKey
@@ -68,7 +71,7 @@ router.put('/settings', requirePermission('settings.manage'),
                        WHEN NOT MATCHED THEN INSERT (TenantId, SettingKey, SettingValue) VALUES (@tid, @k, @v);`,
         { tid: req.ctx.tenantId, k, v });
       }
-      await auditTenant(req, 'settings.updated', 'tenant', req.ctx.tenantId, { keys: Object.keys(b.settings || {}).join(',') }, tx);
+      await auditTenant(req, 'settings.updated', 'tenant', req.ctx.tenantId, { keys: Object.keys(b.settings || {}).join(','), facilityType: b.facilityType }, tx);
     });
     res.json({ data: { ok: true } });
   }));

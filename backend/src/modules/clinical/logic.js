@@ -95,3 +95,33 @@ export function toCsv(rows, columns) {
   const body = rows.map((r) => columns.map((c) => esc(typeof c.value === 'function' ? c.value(r) : r[c.key])).join(','));
   return [head, ...body].join('\r\n');
 }
+
+/**
+ * Splits a package price (in paise) across its tests in proportion to their list prices,
+ * so the order items always add up exactly to the package price. Equal split if all list prices are 0.
+ * @param {number} packageMinor package price in paise
+ * @param {number[]} listMinor individual test prices in paise
+ * @returns {number[]} allocated paise per test
+ */
+export function allocatePackagePrice(packageMinor, listMinor) {
+  const n = listMinor.length;
+  if (!n) return [];
+  const sum = listMinor.reduce((a, b) => a + b, 0);
+  const out = listMinor.map((p) => (sum > 0 ? Math.floor((packageMinor * p) / sum) : Math.floor(packageMinor / n)));
+  out[n - 1] += packageMinor - out.reduce((a, b) => a + b, 0);
+  return out;
+}
+
+/** Payment status of a lab order from its linked bill. */
+export function labPaymentStatus(bill) {
+  if (!bill || bill.billId == null) return 'unbilled';
+  if (bill.status === 'cancelled') return 'cancelled';
+  if (bill.status === 'draft') return 'on_bill';
+  const total = Number(bill.total); const paid = Number(bill.paid);
+  if (paid >= total) return 'paid';
+  return paid > 0 ? 'partial' : 'unpaid';
+}
+
+/** Sample workflow: allowed transitions. */
+const SAMPLE_FLOW = { pending: ['collected'], collected: ['received', 'rejected'], received: ['rejected'], rejected: ['collected'] };
+export const canMoveSample = (from, to) => (SAMPLE_FLOW[from] || []).includes(to);

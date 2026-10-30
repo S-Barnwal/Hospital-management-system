@@ -11,7 +11,7 @@ import { toCsv } from '../clinical/logic.js';
 const router = Router();
 router.use(requireTenant, requireFeature('reports'));
 
-function range(req) {
+export function range(req) {
   const tz = req.ctx.timezone;
   const today = localDateString(tz);
   const to = /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : today;
@@ -22,7 +22,7 @@ function range(req) {
   return { from, to, start: localDayRangeUtc(tz, from).start, end: localDayRangeUtc(tz, to).end, offset: tzOffsetMinutes(tz) };
 }
 
-const day = (col) => `CONVERT(CHAR(10), CAST(DATEADD(MINUTE, @offset, ${col}) AS DATE), 23)`;
+export const day = (col) => `CONVERT(CHAR(10), CAST(DATEADD(MINUTE, @offset, ${col}) AS DATE), 23)`;
 
 // Each report: SQL (scoped by @tid, @start, @end) + CSV columns.
 const REPORTS = {

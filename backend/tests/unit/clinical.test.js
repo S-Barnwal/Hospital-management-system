@@ -67,3 +67,30 @@ describe('Plan feature gate', () => {
     assert.equal((await run(['patients'])).code, 'FEATURE_NOT_IN_PLAN');
   });
 });
+
+describe('Lab packages, payments and samples', async () => {
+  const { allocatePackagePrice, labPaymentStatus, canMoveSample } = await import('../../src/modules/clinical/logic.js');
+  test('package price is split proportionally and sums exactly', () => {
+    const a = allocatePackagePrice(80000, [80000, 20000]);
+    assert.deepEqual(a, [64000, 16000]);
+    const b = allocatePackagePrice(10000, [3333, 3333, 3334]);
+    assert.equal(b.reduce((x, y) => x + y, 0), 10000);
+    assert.deepEqual(allocatePackagePrice(1000, [0, 0, 0]), [333, 333, 334]);
+    assert.deepEqual(allocatePackagePrice(500, []), []);
+  });
+  test('payment status from bill', () => {
+    assert.equal(labPaymentStatus(null), 'unbilled');
+    assert.equal(labPaymentStatus({ billId: 1, status: 'draft', total: 10, paid: 0 }), 'on_bill');
+    assert.equal(labPaymentStatus({ billId: 1, status: 'finalized', total: 10, paid: 0 }), 'unpaid');
+    assert.equal(labPaymentStatus({ billId: 1, status: 'finalized', total: 10, paid: 4 }), 'partial');
+    assert.equal(labPaymentStatus({ billId: 1, status: 'finalized', total: 10, paid: 10 }), 'paid');
+    assert.equal(labPaymentStatus({ billId: 1, status: 'cancelled', total: 10, paid: 0 }), 'cancelled');
+  });
+  test('sample transitions', () => {
+    assert.ok(canMoveSample('pending', 'collected'));
+    assert.ok(canMoveSample('collected', 'received'));
+    assert.ok(canMoveSample('rejected', 'collected'));
+    assert.ok(!canMoveSample('pending', 'received'));
+    assert.ok(!canMoveSample('received', 'collected'));
+  });
+});

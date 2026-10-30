@@ -29,6 +29,10 @@ Legend — **Tested here**: covered by unit tests that were run (36/36 passing).
 | Reports: KPIs, 7 reports, CSV export (formula-injection safe) | Written; CSV escaping tested | |
 | Plan gating (Starter has no billing/IPD/lab/pharmacy/reports) | Tested here (middleware) | UI shows "Upgrade" |
 | Toast notifications (react-toastify) | Rendered here | hospital app + admin portal |
+| Lab: departments, packages (proportional price split), price history with reasons, referral doctors & commission | Written; split maths tested | migration 005 |
+| Lab: per-sample-type samples (collect/receive/reject/recollect), order status follows samples | Written; transitions tested | |
+| Lab orders: discount, own invoice + payment at order time, Net/Paid/Balance/payment status | Written; status mapping tested | OPD-linked orders use the patient's draft bill |
+| Payments register, Expenses (+ categories), Analytics (profit, TAT, referrals), Backups (JSON export + log) | Written; UI verified with mock data | needs run against SQL Server |
 | Multi-branch management | **Not implemented** | Enterprise roadmap |
 | E-mail / SMS notifications | **Integration pending** | reset links printed to server log in development |
 | File uploads | **Not implemented** | design in SECURITY.md |

@@ -7,9 +7,9 @@ import { db, withTransaction, t } from '../../db/pool.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
-import { nextSequence, formatNumber } from '../tenants/sequences.js';
 import { balanceDue } from '../clinical/logic.js';
-import { lockBill, addBillItem, recalcBill, finalizeBill, getOrCreateDraftBill } from './billing.service.js';
+import { lockBill, addBillItem, recalcBill, finalizeBill, getOrCreateDraftBill, recordBillPayment } from './billing.service.js';
+import { localDayRangeUtc } from '../../utils/time.js';
 
 const router = Router();
 router.use(requireTenant, requireFeature('billing'));
@@ -142,24 +142,7 @@ const payBody = z.object({
 async function postPayment(req, kind) {
   const id = idParam(req.params.id);
   return withTransaction(async (tx) => {
-    const bill = await lockBill(tx, req.ctx.tenantId, id);
-    if (bill.Status !== 'finalized') throw conflict('Payments can only be recorded against a finalised bill.', 'BILL_STATE');
-    const amount = Number(req.body.amount.toFixed(2));
-    const paid = Number(bill.PaidAmount);
-    const total = Number(bill.Total);
-    if (kind === 'payment' && amount > Number(balanceDue(total, paid))) throw badRequest(`Amount exceeds the balance due (${balanceDue(total, paid)}).`);
-    if (kind === 'refund') {
-      if (!req.body.reason) throw badRequest('A refund reason is required.');
-      if (amount > paid) throw badRequest(`Refund cannot exceed the amount paid (${paid.toFixed(2)}).`);
-    }
-    const n = await nextSequence(tx, req.ctx.tenantId, 'receipt');
-    const receipt = formatNumber(kind === 'refund' ? 'RFD' : 'RCT', n);
-    await tx.exec(
-      `INSERT INTO hms.BillPayments (TenantId, BillId, ReceiptNumber, Kind, Amount, Method, Reference, Reason, ReceivedByUserId)
-       VALUES (@tid, @id, @rc, @kind, @amt, @method, @ref, @reason, @uid)`,
-      { tid: req.ctx.tenantId, id, rc: receipt, kind, amt: t.money(amount.toFixed(2)), method: req.body.method, ref: req.body.reference ?? null, reason: req.body.reason ?? null, uid: req.ctx.userId });
-    await tx.exec(`UPDATE hms.Bills SET PaidAmount = PaidAmount ${kind === 'refund' ? '-' : '+'} @amt WHERE TenantId = @tid AND BillId = @id`,
-      { tid: req.ctx.tenantId, id, amt: t.money(amount.toFixed(2)) });
+    const { receipt, amount } = await recordBillPayment(tx, req.ctx, id, kind, req.body);
     await auditTenant(req, `bill.${kind}`, 'bill', id, { receipt, amount, method: req.body.method }, tx);
     return receipt;
   });
@@ -188,5 +171,37 @@ router.post('/bills/:id/cancel', requirePermission('billing.write'),
     });
     res.json({ data: { ok: true } });
   }));
+
+// ---------- Payments register (all receipts and refunds of this hospital) ----------
+router.get('/payments', requirePermission('billing.read'), asyncHandler(async (req, res) => {
+  const lq = parseListQuery(req.query, { received: 'bp.ReceivedAt', amount: 'bp.Amount' }, 'received');
+  const isDate = (v) => /^\d{4}-\d{2}-\d{2}$/.test(v || '');
+  const start = isDate(req.query.from) ? localDayRangeUtc(req.ctx.timezone, req.query.from).start : null;
+  const end = isDate(req.query.to) ? localDayRangeUtc(req.ctx.timezone, req.query.to).end : null;
+  const q = req.query.q ? `%${String(req.query.q).trim().slice(0, 100).replace(/[%_[\]]/g, (m) => `[${m}]`)}%` : null;
+  const params = {
+    tid: req.ctx.tenantId, offset: lq.offset, size: lq.pageSize, start, end, q,
+    method: ['cash', 'card', 'upi', 'bank', 'other'].includes(req.query.method) ? req.query.method : null,
+    kind: ['payment', 'refund'].includes(req.query.kind) ? req.query.kind : null,
+  };
+  const from = `FROM hms.BillPayments bp
+    JOIN hms.Bills b ON b.TenantId = bp.TenantId AND b.BillId = bp.BillId
+    JOIN hms.Patients p ON p.TenantId = b.TenantId AND p.PatientId = b.PatientId
+    LEFT JOIN hms.Users u ON u.TenantId = bp.TenantId AND u.UserId = bp.ReceivedByUserId`;
+  const where = `WHERE bp.TenantId = @tid AND (@start IS NULL OR bp.ReceivedAt >= @start) AND (@end IS NULL OR bp.ReceivedAt < @end)
+    AND (@method IS NULL OR bp.Method = @method) AND (@kind IS NULL OR bp.Kind = @kind)
+    AND (@q IS NULL OR bp.ReceiptNumber LIKE @q OR b.BillNumber LIKE @q OR p.PatientNumber LIKE @q OR p.FirstName LIKE @q OR p.LastName LIKE @q OR p.Phone LIKE @q)`;
+  const [rows, totals] = await db.many(`
+    SELECT bp.BillPaymentId AS id, bp.ReceiptNumber AS receiptNumber, bp.Kind AS kind, bp.Amount AS amount, bp.Method AS method, bp.Reference AS reference,
+           bp.Reason AS reason, bp.ReceivedAt AS receivedAt, b.BillId AS billId, b.BillNumber AS billNumber,
+           p.PatientId AS patientId, p.PatientNumber AS patientNumber, p.FirstName AS patientFirstName, p.LastName AS patientLastName, u.FullName AS receivedBy
+    ${from} ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
+    SELECT COUNT(*) AS total,
+           ISNULL(SUM(CASE WHEN bp.Kind = 'payment' THEN bp.Amount ELSE 0 END), 0) AS payments,
+           ISNULL(SUM(CASE WHEN bp.Kind = 'refund' THEN bp.Amount ELSE 0 END), 0) AS refunds
+    ${from} ${where};`, params);
+  const t0 = totals[0];
+  res.json({ data: rows, meta: { ...pageMeta(lq, t0.total), payments: t0.payments, refunds: t0.refunds, net: (Number(t0.payments) - Number(t0.refunds)).toFixed(2) } });
+}));
 
 export default router;

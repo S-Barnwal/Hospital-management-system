@@ -20,6 +20,10 @@ import Billing, { BillDetail } from './pages/app/Billing.jsx';
 import Lab, { LabOrderDetail } from './pages/app/Lab.jsx';
 import Pharmacy from './pages/app/Pharmacy.jsx';
 import Reports from './pages/app/Reports.jsx';
+import { LabTests, LabPackages, PackageForm, PriceHistory, LabSamples, LabResults, ReferralDoctors } from './pages/app/LabPages.jsx';
+import { Payments as HospitalPayments, Expenses } from './pages/app/FinancePages.jsx';
+import Analytics from './pages/app/Analytics.jsx';
+import Backups from './pages/app/Backups.jsx';
 import {
   AdminDashboard, Tenants, TenantDetail, Plans, Subscriptions, Payments, DemoRequests, Messages, AuditLogs, AdminSettings,
 } from './pages/admin/AdminPages.jsx';
@@ -68,6 +72,18 @@ export default function App() {
             <Route path="billing/:id" element={guard('billing.read', <BillDetail />, 'billing')} />
             <Route path="laboratory" element={guard('lab.read', <Lab />, 'laboratory')} />
             <Route path="laboratory/:id" element={guard('lab.read', <LabOrderDetail />, 'laboratory')} />
+            <Route path="lab-tests" element={guard('lab.read', <LabTests />, 'laboratory')} />
+            <Route path="lab-packages" element={guard('lab.read', <LabPackages />, 'laboratory')} />
+            <Route path="lab-packages/new" element={guard('lab.configure', <PackageForm />, 'laboratory')} />
+            <Route path="lab-packages/:id/edit" element={guard('lab.configure', <PackageForm />, 'laboratory')} />
+            <Route path="lab-prices/:type/:id" element={guard('lab.read', <PriceHistory />, 'laboratory')} />
+            <Route path="lab-samples" element={guard('lab.read', <LabSamples />, 'laboratory')} />
+            <Route path="lab-results" element={guard('lab.read', <LabResults />, 'laboratory')} />
+            <Route path="referral-doctors" element={guard('lab.read', <ReferralDoctors />, 'laboratory')} />
+            <Route path="payments" element={guard('billing.read', <HospitalPayments />, 'billing')} />
+            <Route path="expenses" element={guard('expenses.read', <Expenses />, 'billing')} />
+            <Route path="analytics" element={guard('reports.read', <Analytics />, 'reports')} />
+            <Route path="backups" element={guard('backups.manage', <Backups />)} />
             <Route path="pharmacy" element={guard('pharmacy.read', <Pharmacy />, 'pharmacy')} />
             <Route path="inventory" element={<Navigate to="/app/pharmacy" replace />} />
             <Route path="reports" element={guard('reports.read', <Reports />, 'reports')} />

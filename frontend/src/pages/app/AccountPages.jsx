@@ -3,6 +3,7 @@ import { Fragment, useEffect, useMemo, useState } from 'react';
 import { LuPlus, LuShieldCheck, LuHistory, LuPackage, LuFileText, LuTrash2 } from 'react-icons/lu';
 import { api } from '../../lib/api.js';
 import { useApi, useForm } from '../../lib/hooks.js';
+import { FACILITY_OPTIONS, profileFor } from '../../lib/facility.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { date, dateTime, money, titleCase, relative, BRAND } from '../../lib/format.js';
@@ -158,13 +159,13 @@ export function Settings() {
   const [saved, setSaved] = useState(false);
   const f = useForm({ name: '', email: '', phone: '', city: '', state: '', timezone: 'Asia/Kolkata', prefix: '', address: '' });
   useEffect(() => {
-    if (data) f.setValues({ name: data.Name, email: data.Email || '', phone: data.Phone || '', city: data.City || '', state: data.State || '', timezone: data.Timezone,
+    if (data) f.setValues({ name: data.Name, email: data.Email || '', phone: data.Phone || '', city: data.City || '', state: data.State || '', timezone: data.Timezone, facilityType: data.FacilityType || 'other',
       prefix: data.settings['patient.number_prefix'] || '', address: data.settings['hospital.address'] || '' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data]);
   const save = f.submit(async (v) => {
     setSaved(false);
-    await api.put('/settings', { name: v.name, email: v.email || null, phone: v.phone || null, city: v.city || null, state: v.state || null, timezone: v.timezone,
+    await api.put('/settings', { name: v.name, email: v.email || null, phone: v.phone || null, city: v.city || null, state: v.state || null, timezone: v.timezone, facilityType: v.facilityType || null,
       settings: { 'patient.number_prefix': v.prefix.toUpperCase() || null, 'hospital.address': v.address || null } });
     setSaved(true);
     notify.success('Settings saved.');
@@ -187,6 +188,8 @@ export function Settings() {
               <Input label="Address (printed on documents)" {...f.bind('address')} className="sm:col-span-2" />
               <Select label="Timezone" options={TIMEZONES.map((t) => ({ value: t, label: t }))} {...f.bind('timezone')} hint="Used for all dates, schedules and the dashboard." />
               <Input label="Patient number prefix" maxLength={6} {...f.bind('prefix')} hint="Applies to newly registered patients, e.g. GVH-000124." />
+              <Select label="Facility type" options={FACILITY_OPTIONS} {...f.bind('facilityType')} className="sm:col-span-2"
+                hint={`Arranges the menu for your kind of facility. ${profileFor(f.values.facilityType).note} (Only the menu changes — your plan and data stay the same.)`} />
             </fieldset>
             {f.formError && <Alert tone="error" className="sm:col-span-2">{f.formError}</Alert>}
             {saved && <Alert tone="success" className="sm:col-span-2">Settings saved.</Alert>}
