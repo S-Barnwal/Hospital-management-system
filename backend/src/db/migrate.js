@@ -6,7 +6,8 @@ import { readdir, readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getPool, closePool, sql } from './pool.js';
+import { closePool, sql } from './pool.js';
+import { config } from '../config/env.js';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 export const MIGRATIONS_DIR = path.resolve(here, '../../../database/migrations');
@@ -76,8 +77,22 @@ async function adoptExistingSchema(pool, files, log) {
   }
 }
 
-export async function migrate({ statusOnly = false, log = console.log } = {}) {
-  const pool = await getPool();
+/**
+ * Migrations use their own single connection with a long per-statement timeout: back-fills on a hosted SQL Server
+ * over the internet can take longer than the app's normal 30-second request timeout.
+ */
+const MIGRATION_TIMEOUT_MS = 5 * 60 * 1000;
+
+export async function migrate(opts = {}) {
+  const pool = await new sql.ConnectionPool({ ...config.db, requestTimeout: MIGRATION_TIMEOUT_MS, pool: { max: 1, min: 0, idleTimeoutMillis: 30000 } }).connect();
+  try {
+    return await runMigrations(pool, opts);
+  } finally {
+    await pool.close().catch(() => {});
+  }
+}
+
+async function runMigrations(pool, { statusOnly = false, log = console.log } = {}) {
   await ensureTable(pool);
   const allFiles = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
   if (!statusOnly) await adoptExistingSchema(pool, allFiles, log);
