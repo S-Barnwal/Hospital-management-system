@@ -169,7 +169,8 @@ describe('"Free for now" plans', () => {
       // Signed straight in, own data only.
       const me = await c('GET', '/tenant/me');
       assert.equal(me.status, 200);
-      assert.equal((await c('GET', `/lab/orders/${ids.orderA}`)).status, 404);
+      // Another hospital's order is out of reach: 404, or 403 when this plan has no laboratory module at all.
+      assert.ok([403, 404].includes((await c('GET', `/lab/orders/${ids.orderA}`)).status));
       const tid = (await db.one('SELECT TenantId FROM hms.Tenants WHERE Slug = @slug', { slug })).TenantId;
       const sub = await db.one('SELECT IsFree FROM hms.Subscriptions WHERE TenantId = @t', { t: tid });
       assert.equal(sub.IsFree, true);
@@ -203,7 +204,7 @@ describe('Phase 2: care & cash isolation', () => {
       items: [{ medicineName: 'Paracetamol 650', dosage: '1 tab', frequency: '1-1-1', durationDays: 3 }] });
     assert.equal(tpl.status, 201, JSON.stringify(tpl.body));
     assert.ok(!(await b('GET', '/opd/templates?all=true')).body.data.some((x) => x.id === tpl.body.data.id));
-    assert.equal((await b('PUT', `/opd/templates/${tpl.body.data.id}`, { name: 'x', items: [{ medicineName: 'y' }] })).status, 404);
+    assert.equal((await b('PUT', `/opd/templates/${tpl.body.data.id}`, { name: 'Hijack', items: [{ medicineName: 'Something' }] })).status, 404);
     assert.equal((await b('DELETE', `/opd/templates/${tpl.body.data.id}`)).status, 404);
 
     // Ward, admission, vitals, notes, charges in A

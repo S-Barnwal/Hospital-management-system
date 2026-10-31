@@ -7,6 +7,7 @@
 import { test, before, after, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { randomUUID } from 'node:crypto';
+import http from 'node:http';
 import { config } from '../../src/config/env.js';
 import { createApp } from '../../src/app.js';
 import { db, withTransaction, closePool } from '../../src/db/pool.js';
@@ -26,10 +27,21 @@ const suffix = randomUUID().slice(0, 6);
 const A = { slug: `iso-a-${suffix}`, email: `owner-a-${suffix}@test.local` };
 const B = { slug: `iso-b-${suffix}`, email: `owner-b-${suffix}@test.local` };
 
+/** GET with a chosen Host header. fetch() silently ignores Host, so subdomain routing is tested with node:http. */
+function getWithHost(path, host, cookie) {
+  const u = new URL(`${base}${path}`);
+  return new Promise((resolve, reject) => {
+    const req = http.request({ hostname: u.hostname, port: u.port, path: u.pathname + u.search, method: 'GET',
+      headers: { Host: host, Cookie: cookie, 'X-Requested-With': 'fetch' } }, (res) => { res.resume(); res.on('end', () => resolve({ status: res.statusCode })); });
+    req.on('error', reject); req.end();
+  });
+}
+
 /** Tiny cookie-keeping HTTP client. */
 function client() {
   const jar = new Map();
-  return async (method, path, body, headers = {}) => {
+  const send = async (method, path, body, headers = {}) => {
+    if (headers.Host) return getWithHost(path, headers.Host, [...jar].map(([k, v]) => `${k}=${v}`).join('; '));
     const res = await fetch(`${base}${path}`, {
       method,
       headers: {
@@ -46,6 +58,7 @@ function client() {
     const json = await res.json().catch(() => null);
     return { status: res.status, body: json };
   };
+  return send;
 }
 
 async function makeTenant(t) {
@@ -156,8 +169,9 @@ describe('Payment finalisation idempotency', () => {
     { id: onboardingId, pid: plan.PlanId, order: orderId });
 
     const [r1, r2] = await Promise.all([
-      finalizePaidOrder({ providerName: 'sandbox', orderId, paymentId: 'sandbox_pay_1', source: 'checkout' }),
-      finalizePaidOrder({ providerName: 'sandbox', orderId, paymentId: 'sandbox_pay_1', source: 'webhook' }),
+      // Payment ids are unique across the whole database, so each run uses its own.
+      finalizePaidOrder({ providerName: 'sandbox', orderId, paymentId: `sandbox_pay_${suffix}`, source: 'checkout' }),
+      finalizePaidOrder({ providerName: 'sandbox', orderId, paymentId: `sandbox_pay_${suffix}`, source: 'webhook' }),
     ]);
     assert.equal([r1, r2].filter((r) => r.alreadyProcessed).length, 1);
     const count = await db.one('SELECT COUNT(*) AS n FROM hms.Tenants WHERE Slug = @s', { s: `idem-${suffix}` });

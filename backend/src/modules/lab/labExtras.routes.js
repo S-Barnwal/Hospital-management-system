@@ -157,7 +157,7 @@ router.post('/home-collections/:id/status', requirePermission('lab.write'),
                        CollectedAt = CASE WHEN @s = 'collected' THEN SYSUTCDATETIME() ELSE CollectedAt END,
                        CancelReason = CASE WHEN @s = 'cancelled' THEN @r ELSE CancelReason END, UpdatedAt = SYSUTCDATETIME()
                      WHERE TenantId = @tid AND HomeCollectionId = @id`,
-      { tid: req.ctx.tenantId, id, s: b.status, c: collector ?? null, at: b.scheduledAt ? new Date(b.scheduledAt) : null, r: b.reason ?? null });
+      { tid: req.ctx.tenantId, id, s: b.status, c: collector ?? null, at: t.datetime(b.scheduledAt ? new Date(b.scheduledAt) : null) /* typed: an untyped NULL made ISNULL() return text */, r: b.reason ?? null });
       if (b.status === 'collected') {
         // Same effect as "Collect all samples" on the order.
         await tx.exec(`UPDATE hms.LabSamples SET Status = 'collected', CollectedAt = SYSUTCDATETIME(), CollectedByUserId = @uid, RejectReason = NULL
