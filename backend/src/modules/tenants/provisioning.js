@@ -5,6 +5,8 @@ import { ROLE_TEMPLATES } from '../rbac/permissions.js';
 import { addInterval } from '../../utils/pricing.js';
 import { audit } from '../../utils/audit.js';
 import { t } from '../../db/pool.js';
+import { timezoneFor } from '../../utils/geo.js';
+import { invoiceForPayment } from '../invoices/invoice.service.js';
 
 /** Common tests every new hospital starts with; prices are 0 so each hospital sets its own. */
 export const DEFAULT_LAB_TESTS = [
@@ -37,6 +39,20 @@ export async function seedDefaultExpenseCategories(tx, tenantId) {
   }
 }
 
+/** A starter list of IPD service charges (price 0 — each hospital sets its own). */
+export const DEFAULT_SERVICE_CHARGES = [
+  ['Doctor visit (IPD)', 'doctor_visit'], ['Specialist consultation (IPD)', 'doctor_visit'], ['Nursing charges (per day)', 'nursing'],
+  ['Dressing', 'procedure'], ['Injection / IV administration', 'procedure'], ['ECG', 'procedure'], ['Nebulisation', 'procedure'],
+  ['Oxygen (per hour)', 'consumable'], ['Catheterisation', 'procedure'], ['Ambulance', 'other'],
+];
+
+export async function seedDefaultServiceCharges(tx, tenantId) {
+  for (const [name, category] of DEFAULT_SERVICE_CHARGES) {
+    await tx.exec(`IF NOT EXISTS (SELECT 1 FROM hms.ServiceCharges WHERE TenantId = @tid AND Name = @name)
+                   INSERT INTO hms.ServiceCharges (TenantId, Name, Category, Price) VALUES (@tid, @name, @cat, 0)`, { tid: tenantId, name, cat: category });
+  }
+}
+
 export const DEFAULT_DEPARTMENTS = ['General Medicine', 'Paediatrics', 'Gynaecology', 'Orthopaedics', 'Emergency'];
 
 /** Copies the default role templates (with permissions) into a tenant. Returns { [roleCode]: RoleId }. */
@@ -66,9 +82,10 @@ export async function createDefaultRoles(tx, tenantId) {
  */
 export async function provisionTenant(tx, o, plan, payment, actor = { type: 'system', id: null, ip: null }) {
   const tenant = await tx.one(
-    `INSERT INTO hms.Tenants (Slug, Name, Email, Phone, City, FacilityType, Status, Timezone)
-     OUTPUT INSERTED.TenantId VALUES (@slug, @name, @email, @phone, @city, @ftype, 'active', @tz)`,
-    { slug: o.slug, name: o.orgName, email: o.ownerEmail, phone: o.phone ?? null, city: o.city ?? null, ftype: o.facilityType ?? null, tz: o.timezone || 'Asia/Kolkata' });
+    `INSERT INTO hms.Tenants (Slug, Name, Email, Phone, City, State, Country, FacilityType, Status, Timezone)
+     OUTPUT INSERTED.TenantId VALUES (@slug, @name, @email, @phone, @city, @state, @country, @ftype, 'active', @tz)`,
+    { slug: o.slug, name: o.orgName, email: o.ownerEmail, phone: o.phone ?? null, city: o.city ?? null, state: o.state ?? null,
+      country: o.country || 'IN', ftype: o.facilityType ?? null, tz: o.timezone || timezoneFor(o.country) });
   const tenantId = tenant.TenantId;
 
   await tx.exec(`INSERT INTO hms.TenantDomains (TenantId, Hostname, IsPrimary, IsVerified) VALUES (@tid, @host, 1, 1)`,
@@ -99,35 +116,27 @@ export async function provisionTenant(tx, o, plan, payment, actor = { type: 'sys
   }
   await seedDefaultLabTests(tx, tenantId);
   await seedDefaultExpenseCategories(tx, tenantId);
+  await seedDefaultServiceCharges(tx, tenantId);
 
   const start = new Date();
-  const end = addInterval(start, plan.interval);
+  // A free trial runs for the plan's trial days; afterwards the normal renewal (payment) flow takes over.
+  const end = plan.trialDays ? new Date(start.getTime() + plan.trialDays * 86400000) : addInterval(start, plan.interval);
   const sub = await tx.one(
-    `INSERT INTO hms.Subscriptions (TenantId, PlanId, BillingInterval, Status, CurrentPeriodStart, CurrentPeriodEnd, GraceDays)
-     OUTPUT INSERTED.SubscriptionId VALUES (@tid, @pid, @interval, 'active', @start, @end, @grace)`,
-    { tid: tenantId, pid: plan.planId, interval: plan.interval, start, end, grace: config.subscriptionGraceDays });
+    `INSERT INTO hms.Subscriptions (TenantId, PlanId, BillingInterval, Status, CurrentPeriodStart, CurrentPeriodEnd, GraceDays, IsFree, IsTrial)
+     OUTPUT INSERTED.SubscriptionId VALUES (@tid, @pid, @interval, 'active', @start, @end, @grace, @free, @trial)`,
+    { tid: tenantId, pid: plan.planId, interval: plan.interval, start, end, grace: config.subscriptionGraceDays, free: Boolean(plan.isFree), trial: Boolean(plan.trialDays) });
 
   let invoiceNumber = null;
   if (payment) {
-    invoiceNumber = await issueInvoice(tx, { tenantId, payment, description: `${o.planName ?? 'Subscription'} plan — ${plan.interval}` });
+    ({ invoiceNumber } = await invoiceForPayment(tx, { tenantId, payment, description: `${o.planName ?? 'Subscription'} plan — ${plan.interval}`,
+      subscriptionId: sub.SubscriptionId, planId: plan.planId, interval: plan.interval, periodStart: start, periodEnd: end }));
     await tx.exec('UPDATE hms.Payments SET TenantId = @tid, SubscriptionId = @sid, UpdatedAt = SYSUTCDATETIME() WHERE PaymentId = @pid',
       { tid: tenantId, sid: sub.SubscriptionId, pid: payment.paymentId });
   }
 
   await audit({ tenantId, actorType: actor.type, actorId: actor.id, action: 'tenant.provisioned', entityType: 'tenant', entityId: tenantId,
-    metadata: { slug: o.slug, planId: plan.planId, interval: plan.interval, sandbox: payment?.isSandbox ?? null }, ip: actor.ip }, tx);
+    metadata: { slug: o.slug, planId: plan.planId, interval: plan.interval, free: Boolean(plan.isFree), trialDays: plan.trialDays ?? 0, sandbox: payment?.isSandbox ?? null }, ip: actor.ip }, tx);
 
-  return { tenantId, ownerUserId: owner.UserId, subscriptionId: sub.SubscriptionId, invoiceNumber };
+  return { tenantId, ownerUserId: owner.UserId, subscriptionId: sub.SubscriptionId, invoiceNumber, periodStart: start, periodEnd: end };
 }
 
-/** Platform invoice numbers: INV-YYYYMM-<PaymentId>, sandbox invoices are prefixed SBX. Unique per payment. */
-export async function issueInvoice(tx, { tenantId, payment, description }) {
-  const now = new Date();
-  const ym = `${now.getUTCFullYear()}${String(now.getUTCMonth() + 1).padStart(2, '0')}`;
-  const number = `${payment.isSandbox ? 'SBX' : 'INV'}-${ym}-${String(payment.paymentId).padStart(6, '0')}`;
-  await tx.exec(
-    `INSERT INTO hms.Invoices (TenantId, PaymentId, InvoiceNumber, Description, Subtotal, TaxAmount, Total, Currency, IsSandbox)
-     VALUES (@tid, @pid, @num, @desc, @sub, @tax, @total, @cur, @sbx)`,
-    { tid: tenantId, pid: payment.paymentId, num: number, desc: description, sub: t.money(payment.subtotal), tax: t.money(payment.tax), total: t.money(payment.total), cur: payment.currency, sbx: payment.isSandbox });
-  return number;
-}

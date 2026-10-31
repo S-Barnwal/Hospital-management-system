@@ -14,13 +14,13 @@ Menu items a user is not allowed to use are **hidden**, and the server **also bl
 |------|----------------|-------------|
 | **Hospital Owner** | The person who bought the subscription | Everything, including subscription and renewal |
 | **Hospital Admin** | Office manager / IT person | Everything except changing the subscription |
-| **Hospital Manager** | Operations head | Dashboard, reports, analytics, audit log, view patients/appointments/staff/IPD/billing/lab/expenses |
-| **Receptionist** | Front desk | Register patients, book & check-in appointments, view beds, create bills and take payments |
-| **Doctor** | Consultant | Appointments, OPD notes & prescriptions, admissions, lab orders/results/verification, view pharmacy |
+| **Hospital Manager** | Operations head | Dashboard, reports, analytics, audit log, view patients/appointments/staff/IPD/billing/lab/expenses, mark attendance and approve leave |
+| **Receptionist** | Front desk | Register patients, book & check-in appointments, view beds, create bills, take payments & deposits, close own cash |
+| **Doctor** | Consultant | Appointments, OPD notes, prescriptions & templates, admissions, **sign discharge summaries**, lab orders/results/verification, view pharmacy |
 | **Nurse** | Ward / OPD nurse | View patients & OPD, admit/transfer/discharge, view lab |
 | **Lab Technician** | Lab staff | Lab orders, samples, result entry |
 | **Pharmacist** | Pharmacy counter | Medicines, suppliers, stock, dispensing, view billing |
-| **Accountant** | Accounts | Bills, payments, refunds, expenses, reports & export, view lab and subscription |
+| **Accountant** | Accounts | Bills, payments, refunds, deposits, expenses, reports & export, close own cash and view all cash closings, view lab and subscription, payroll (salaries & payslips) |
 
 ## All permissions (plain meaning)
 
@@ -35,13 +35,21 @@ Menu items a user is not allowed to use are **hidden**, and the server **also bl
 | Subscription | subscription.read / manage | View plan & invoices · renew / change plan |
 | Audit | audit.read | View the audit log |
 | OPD | opd.read / write | View · write consultations & prescriptions |
-| IPD | ipd.read / write / configure | View · admit/transfer/discharge · set up wards & beds |
-| Billing | billing.read / write / refund | View · create bills & take payments · cancel bills & refund |
+| IPD | ipd.read / write / configure | View · admit/transfer/discharge, vitals, nursing notes, charges · set up wards, beds & service charges |
+| IPD | ipd.discharge_summary | Sign (lock) discharge summaries — doctors |
+| Billing | billing.read / write / refund | View · create bills, take payments & deposits, payment links · cancel bills & refunds (incl. deposit refunds) |
+| Cash | cash.close / cash.read | Close own cash at end of shift · see every user's cash closings |
 | Laboratory | lab.read / write / verify / configure | View · orders, samples & results · verify results · manage tests, packages, prices & referral doctors |
 | Pharmacy | pharmacy.read / write / configure | View · dispense & receive stock · manage medicines & suppliers |
 | Reports | reports.read / export | View reports & analytics · download CSV |
 | Expenses | expenses.read / write | View · record, edit & delete expenses |
 | Backups | backups.manage | Download a full data export |
+| HR | hr.attendance | Mark daily attendance, raise leave requests |
+| HR | hr.leave | Approve / reject leave |
+| HR | hr.payroll | See & set salaries, prepare and pay payslips (salaries are hidden from everyone else) |
+| Front desk | queue.manage | Issue tokens, call the next patient, manage TV screens (adding a screen also needs settings.manage) — receptionist, doctor, nurse, lab, pharmacy, accountant, manager |
+| Support | support.use | Raise and reply to tickets with the software provider — owner, admin, manager, accountant |
+| Branches | branches.view | See the group's branches (headline figures only) — owner, admin, manager |
 
 ## Safety rules built in
 

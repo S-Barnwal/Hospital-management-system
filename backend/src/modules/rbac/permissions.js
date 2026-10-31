@@ -41,6 +41,18 @@ export const PERMISSIONS = [
   ['expenses.read', 'expenses', 'View expenses'],
   ['expenses.write', 'expenses', 'Record, edit and delete expenses'],
   ['backups.manage', 'backups', 'Download a full export of hospital data'],
+  // Phase 2
+  ['ipd.discharge_summary', 'ipd', 'Write and sign (finalise) discharge summaries'],
+  ['cash.close', 'billing', 'Close own cash (end of shift / day)'],
+  ['cash.read', 'billing', 'View every user’s cash closings'],
+  // Phase 3
+  ['hr.attendance', 'staff', 'Mark staff attendance and enter leave requests'],
+  ['hr.leave', 'staff', 'Approve or reject leave'],
+  ['hr.payroll', 'staff', 'Set salaries, prepare and pay payroll (sees salaries)'],
+  // Phase 4
+  ['queue.manage', 'appointments', 'Issue and call tokens in the patient queue'],
+  ['support.use', 'settings', 'Raise and reply to support tickets with the software provider'],
+  ['branches.view', 'dashboard', 'See headline figures of the other branches in the group'],
 ];
 
 export const ALL_CODES = PERMISSIONS.map(([code]) => code);
@@ -54,17 +66,17 @@ export const ROLE_TEMPLATES = [
     permissions: ALL_CODES.filter((c) => c !== 'subscription.manage'),
   },
   { code: 'manager', name: 'Hospital Manager', description: 'Operational oversight and reports.',
-    permissions: [...pick('dashboard', 'reports', 'audit'), 'patients.read', 'appointments.read', 'staff.read', 'ipd.read', 'billing.read', 'lab.read', 'expenses.read', 'subscription.read'] },
+    permissions: [...pick('dashboard', 'reports', 'audit'), 'patients.read', 'appointments.read', 'staff.read', 'ipd.read', 'billing.read', 'lab.read', 'expenses.read', 'subscription.read', 'cash.read', 'hr.attendance', 'hr.leave', 'queue.manage', 'support.use', 'branches.view'] },
   { code: 'receptionist', name: 'Receptionist', description: 'Front desk: registration and appointments.',
-    permissions: ['dashboard.view', 'patients.read', 'patients.write', 'appointments.read', 'appointments.write', 'staff.read', 'ipd.read', 'billing.read', 'billing.write'] },
+    permissions: ['dashboard.view', 'patients.read', 'patients.write', 'appointments.read', 'appointments.write', 'staff.read', 'ipd.read', 'billing.read', 'billing.write', 'cash.close', 'queue.manage'] },
   { code: 'doctor', name: 'Doctor', description: 'Consultations and clinical records.',
-    permissions: ['dashboard.view', 'patients.read', 'appointments.read', 'appointments.write', 'staff.read', 'opd.read', 'opd.write', 'ipd.read', 'ipd.write', 'lab.read', 'lab.write', 'lab.verify', 'pharmacy.read'] },
+    permissions: ['dashboard.view', 'patients.read', 'appointments.read', 'appointments.write', 'staff.read', 'opd.read', 'opd.write', 'ipd.read', 'ipd.write', 'ipd.discharge_summary', 'lab.read', 'lab.write', 'lab.verify', 'pharmacy.read', 'queue.manage'] },
   { code: 'nurse', name: 'Nurse', description: 'Care and admission workflows.',
-    permissions: ['dashboard.view', 'patients.read', 'appointments.read', 'staff.read', 'opd.read', 'ipd.read', 'ipd.write', 'lab.read'] },
+    permissions: ['dashboard.view', 'patients.read', 'appointments.read', 'staff.read', 'opd.read', 'ipd.read', 'ipd.write', 'lab.read', 'queue.manage'] },
   { code: 'lab_technician', name: 'Lab Technician', description: 'Lab orders and results.',
-    permissions: ['dashboard.view', 'patients.read', 'lab.read', 'lab.write'] },
+    permissions: ['dashboard.view', 'patients.read', 'lab.read', 'lab.write', 'queue.manage'] },
   { code: 'pharmacist', name: 'Pharmacist', description: 'Pharmacy and stock.',
-    permissions: ['dashboard.view', 'patients.read', 'pharmacy.read', 'pharmacy.write', 'pharmacy.configure', 'billing.read'] },
+    permissions: ['dashboard.view', 'patients.read', 'pharmacy.read', 'pharmacy.write', 'pharmacy.configure', 'billing.read', 'queue.manage'] },
   { code: 'accountant', name: 'Accountant', description: 'Bills, payments and financial reports.',
-    permissions: ['dashboard.view', 'patients.read', 'billing.read', 'billing.write', 'billing.refund', 'reports.read', 'reports.export', 'expenses.read', 'expenses.write', 'lab.read', 'subscription.read'] },
+    permissions: ['dashboard.view', 'patients.read', 'billing.read', 'billing.write', 'billing.refund', 'reports.read', 'reports.export', 'expenses.read', 'expenses.write', 'lab.read', 'subscription.read', 'cash.close', 'cash.read', 'hr.payroll', 'queue.manage', 'support.use'] },
 ];

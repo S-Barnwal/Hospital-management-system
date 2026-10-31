@@ -75,6 +75,12 @@ describe('Subscription state', () => {
     assert.equal(subscriptionState({ Status: 'active', CurrentPeriodEnd: '2026-06-01T00:00:00Z', GraceDays: 7 }, now).state, 'expired');
     assert.equal(subscriptionState(null, now).state, 'none');
   });
+  test('a free subscription of a still-free plan never lapses; once charging starts it follows the normal dates', () => {
+    const old = { Status: 'active', CurrentPeriodEnd: '2026-01-01T00:00:00Z', GraceDays: 7 };
+    assert.equal(subscriptionState({ ...old, FreeNow: true }, now).state, 'active');
+    assert.equal(subscriptionState({ ...old, FreeNow: false }, now).state, 'expired');
+    assert.equal(subscriptionState({ ...old, Status: 'cancelled', FreeNow: true }, now).state, 'expired');
+  });
 });
 
 describe('CSRF guard', () => {

@@ -4,6 +4,9 @@ import { badRequest, conflict, notFound } from '../../utils/errors.js';
 import { computeLine, computeBill, balanceDue } from '../clinical/logic.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
 
+/** SAC 9993 = human health services (GST). Hospitals can change the default in Settings. */
+export const DEFAULT_HEALTHCARE_SAC = '9993';
+
 /** Locks and returns a bill row of this tenant, or throws 404. */
 export async function lockBill(tx, tenantId, billId) {
   const bill = await tx.one('SELECT * FROM hms.Bills WITH (UPDLOCK, ROWLOCK) WHERE TenantId = @tid AND BillId = @id', { tid: tenantId, id: billId });
@@ -41,12 +44,19 @@ export async function addBillItem(tx, tenantId, billId, item) {
   const bill = await lockBill(tx, tenantId, billId);
   if (bill.Status !== 'draft') throw conflict('Only draft bills can be changed. Finalised bills are locked.', 'BILL_LOCKED');
   const line = computeLine(item);
+  // HSN (goods) / SAC (services) code for the GST invoice: given by the caller, else the hospital's default service SAC.
+  let hsnSac = item.hsnSac || null;
+  if (!hsnSac && item.itemType !== 'pharmacy') {
+    const st = await tx.one(`SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = @tid AND SettingKey = 'gst.sac_default'`, { tid: tenantId });
+    hsnSac = st?.SettingValue || DEFAULT_HEALTHCARE_SAC;
+  }
   await tx.exec(
-    `INSERT INTO hms.BillItems (TenantId, BillId, ItemType, Description, Quantity, UnitPrice, TaxRatePercent, LineSubtotal, LineTax, ReferenceType, ReferenceId)
-     VALUES (@tid, @bid, @type, @desc, @qty, @price, @tax, @sub, @ltax, @rtype, @rid)`,
+    `INSERT INTO hms.BillItems (TenantId, BillId, ItemType, Description, Quantity, UnitPrice, TaxRatePercent, LineSubtotal, LineTax, ReferenceType, ReferenceId, HsnSac, ChargeDate)
+     VALUES (@tid, @bid, @type, @desc, @qty, @price, @tax, @sub, @ltax, @rtype, @rid, @hsn, @cdate)`,
     { tid: tenantId, bid: billId, type: item.itemType, desc: item.description.slice(0, 200), qty: t.dec(Number(item.quantity), 10, 2),
       price: t.money(item.unitPrice), tax: t.dec(Number(item.taxRatePercent || 0), 5, 2),
-      sub: t.money(line.lineSubtotal), ltax: t.money(line.lineTax), rtype: item.referenceType ?? null, rid: item.referenceId ?? null });
+      sub: t.money(line.lineSubtotal), ltax: t.money(line.lineTax), rtype: item.referenceType ?? null, rid: item.referenceId ?? null, hsn: hsnSac,
+      cdate: item.chargeDate ? t.date(new Date(`${item.chargeDate}T00:00:00Z`)) : null });
   return recalcBill(tx, tenantId, billId);
 }
 

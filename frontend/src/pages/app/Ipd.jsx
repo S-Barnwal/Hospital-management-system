@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
-import { useSearchParams } from 'react-router-dom';
-import { LuPlus, LuBedDouble, LuArrowRightLeft, LuLogOut, LuPencil, LuTrash2, LuWrench } from 'react-icons/lu';
+import { useNavigate, useSearchParams } from 'react-router-dom';
+import { LuPlus, LuBedDouble, LuPencil, LuTrash2, LuWrench } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -40,56 +40,10 @@ function AdmitModal({ bed, onClose, onDone }) {
   );
 }
 
-function AdmissionModal({ admissionId, wards, onClose, onDone }) {
-  const { can, hasFeature } = useTenantAuth();
-  const { data: a, loading } = useApi(() => api.get(`/ipd/admissions/${admissionId}`), [admissionId]);
-  const [mode, setMode] = useState(null);
-  const [toBed, setToBed] = useState('');
-  const [summary, setSummary] = useState('');
-  const [charge, setCharge] = useState(true);
-  const [busy, setBusy] = useState(false);
-  const free = wards.flatMap((w) => w.beds.filter((b) => b.status === 'available').map((b) => ({ value: String(b.id), label: `${w.name} · ${b.bedNumber}` })));
-  const act = async (fn, msg) => { setBusy(true); const ok = await withToast(fn, msg); setBusy(false); if (ok) onDone(ok); };
-  return (
-    <Modal open onClose={onClose} title={a ? `${a.number} · ${fullName(a.patientFirstName, a.patientLastName)}` : 'Admission'} size="lg">
-      {loading || !a ? <Skeleton className="h-40 w-full" /> : (
-        <div className="space-y-4 text-sm">
-          <dl className="grid gap-3 sm:grid-cols-2">
-            {[['Patient no.', a.patientNumber], ['Bed', `${a.wardName} · ${a.bedNumber}`], ['Admitted', `${dateTime(a.admittedAt)} (${relative(a.admittedAt)})`], ['Doctor', a.doctorName || '—'],
-              ['Ward rate', `${money(a.dailyRate)} / day`], ['Status', a.status]].map(([k, v]) => <div key={k}><dt className="text-muted">{k}</dt><dd className="font-medium">{v}</dd></div>)}
-          </dl>
-          {a.reason && <p className="rounded-lg bg-ivory p-3">{a.reason}</p>}
-          {a.transfers.length > 0 && <div><p className="font-semibold">Transfers</p><ul className="mt-1 space-y-1 text-xs text-muted">{a.transfers.map((t, i) => <li key={i}>{dateTime(t.at)}: {t.fromWard} {t.fromBed} → {t.toWard} {t.toBed}</li>)}</ul></div>}
-          {a.status === 'admitted' && can('ipd.write') && !mode && (
-            <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setMode('transfer')}><LuArrowRightLeft aria-hidden /> Transfer bed</Button><Button onClick={() => setMode('discharge')}><LuLogOut aria-hidden /> Discharge</Button></div>
-          )}
-          {mode === 'transfer' && (
-            <div className="space-y-3 rounded-lg border border-line p-3">
-              <Select label="Move to bed" placeholder={free.length ? 'Select free bed' : 'No free beds'} options={free} value={toBed} onChange={(e) => setToBed(e.target.value)} />
-              <div className="flex gap-2"><Button variant="ghost" onClick={() => setMode(null)}>Back</Button><Button disabled={!toBed} loading={busy} onClick={() => act(() => api.post(`/ipd/admissions/${a.id}/transfer`, { toBedId: Number(toBed) }), 'Patient transferred.')}>Transfer</Button></div>
-            </div>
-          )}
-          {mode === 'discharge' && (
-            <div className="space-y-3 rounded-lg border border-line p-3">
-              <Textarea label="Discharge summary" required value={summary} onChange={(e) => setSummary(e.target.value)} />
-              {hasFeature('billing') && can('billing.write') && Number(a.dailyRate) > 0 && (
-                <label className="flex items-center gap-2"><input type="checkbox" className="accent-forest-800" checked={charge} onChange={(e) => setCharge(e.target.checked)} /> Add bed charges ({money(a.dailyRate)}/day) to the patient’s bill</label>
-              )}
-              <div className="flex gap-2"><Button variant="ghost" onClick={() => setMode(null)}>Back</Button>
-                <Button disabled={summary.trim().length < 3} loading={busy} onClick={() => act(() => api.post(`/ipd/admissions/${a.id}/discharge`, { dischargeSummary: summary.trim(), chargeBedDays: charge }), 'Patient discharged.')}>Confirm discharge</Button></div>
-            </div>
-          )}
-          {a.dischargeSummary && <div><p className="font-semibold">Discharge summary</p><p className="mt-1 whitespace-pre-wrap rounded-lg bg-ivory p-3">{a.dischargeSummary}</p></div>}
-        </div>
-      )}
-    </Modal>
-  );
-}
-
 function BedBoard({ wards, loading, reload }) {
   const { can } = useTenantAuth();
+  const navigate = useNavigate();
   const [admitBed, setAdmitBed] = useState(null);
-  const [admission, setAdmission] = useState(null);
   if (loading && !wards) return <Skeleton className="h-64 w-full" />;
   if (!wards?.length) return <Card><EmptyState icon={LuBedDouble} title="No wards yet">{can('ipd.configure') ? 'Create wards and beds in the Wards & beds tab.' : 'Ask an administrator to set up wards.'}</EmptyState></Card>;
   const all = wards.flatMap((w) => w.beds);
@@ -105,7 +59,7 @@ function BedBoard({ wards, loading, reload }) {
             <div className="grid grid-cols-2 gap-2 sm:grid-cols-4 lg:grid-cols-6">
               {w.beds.map((b) => (
                 <button key={b.id} disabled={b.status === 'maintenance' || (b.status === 'available' && !can('ipd.write'))}
-                  onClick={() => (b.status === 'occupied' ? setAdmission(b.admissionId) : setAdmitBed({ ...b, wardName: w.name }))}
+                  onClick={() => (b.status === 'occupied' ? navigate(`/app/admissions/${b.admissionId}`) : setAdmitBed({ ...b, wardName: w.name }))}
                   className={cx('min-h-20 rounded-xl border-2 p-3 text-left text-xs transition disabled:cursor-not-allowed', BED_STYLE[b.status])}>
                   <p className="text-sm font-bold">Bed {b.bedNumber}</p>
                   {b.status === 'occupied' ? <><p className="truncate font-medium">{fullName(b.patientFirstName, b.patientLastName)}</p><p className="opacity-80">{relative(b.admittedAt)}</p></>
@@ -117,25 +71,24 @@ function BedBoard({ wards, loading, reload }) {
         ))}
       </div>
       {admitBed && <AdmitModal bed={admitBed} onClose={() => setAdmitBed(null)} onDone={() => { setAdmitBed(null); reload(); }} />}
-      {admission && <AdmissionModal admissionId={admission} wards={wards} onClose={() => setAdmission(null)} onDone={() => { setAdmission(null); reload(); }} />}
     </>
   );
 }
 
-function Admissions({ wards, reloadWards }) {
+function Admissions() {
+  const navigate = useNavigate();
   const [filters, setFilters] = useState({ status: 'admitted', q: '' });
   const [page, setPage] = useState(1);
-  const [open, setOpen] = useState(null);
   const q = useDebounced(filters.q);
   useEffect(() => setPage(1), [filters.status, q]);
-  const { data, meta, loading, error, reload } = useApi(() => api.get(`/ipd/admissions${qs({ status: filters.status, q, page })}`), [filters.status, q, page]);
+  const { data, meta, loading, error } = useApi(() => api.get(`/ipd/admissions${qs({ status: filters.status, q, page })}`), [filters.status, q, page]);
   return (
     <Card>
       <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-3">
         <Select label="Status" placeholder="Any" value={filters.status} onChange={(e) => setFilters((s) => ({ ...s, status: e.target.value }))} options={[{ value: 'admitted', label: 'Admitted' }, { value: 'discharged', label: 'Discharged' }]} />
         <Input label="Search" className="sm:col-span-2" placeholder="Admission no., patient" value={filters.q} onChange={(e) => setFilters((s) => ({ ...s, q: e.target.value }))} />
       </div>
-      <DataTable loading={loading} error={error} rows={data} onRowClick={(a) => setOpen(a.id)} empty={<EmptyState icon={LuBedDouble} title="No admissions" />}
+      <DataTable loading={loading} error={error} rows={data} onRowClick={(a) => navigate(`/app/admissions/${a.id}`)} empty={<EmptyState icon={LuBedDouble} title="No admissions" />}
         columns={[
           { key: 'number', label: 'Admission', render: (a) => <span className="font-mono text-xs">{a.number}</span> },
           { key: 'patient', label: 'Patient', render: (a) => <div><p className="font-medium">{fullName(a.patientFirstName, a.patientLastName)}</p><p className="font-mono text-xs text-muted">{a.patientNumber}</p></div> },
@@ -145,7 +98,6 @@ function Admissions({ wards, reloadWards }) {
           { key: 'status', label: 'Status', render: (a) => <StatusBadge status={a.status === 'admitted' ? 'active' : 'completed'} /> },
         ]} />
       <Pagination meta={meta} onPage={setPage} />
-      {open && <AdmissionModal admissionId={open} wards={wards || []} onClose={() => setOpen(null)} onDone={() => { setOpen(null); reload(); reloadWards(); }} />}
     </Card>
   );
 }
@@ -212,12 +164,58 @@ function WardSetup({ wards, reload }) {
   );
 }
 
+const CHARGE_CATS = [['procedure', 'Procedure'], ['doctor_visit', 'Doctor visit'], ['nursing', 'Nursing'], ['consumable', 'Consumable'], ['other', 'Other']];
+function ServiceCharges() {
+  const { data, loading, error, reload } = useApi(() => api.get('/ipd/service-charges?all=true'), []);
+  const [editing, setEditing] = useState(null);
+  const f = useForm({ name: '', category: 'procedure', price: '0', taxRatePercent: '0', isActive: true });
+  useEffect(() => {
+    if (editing) f.setValues(editing === 'new' ? { name: '', category: 'procedure', price: '0', taxRatePercent: '0', isActive: true }
+      : { name: editing.name, category: editing.category, price: String(editing.price), taxRatePercent: String(editing.taxRatePercent), isActive: editing.isActive });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [editing]);
+  const save = f.submit(async (v) => {
+    const body = { name: v.name, category: v.category, price: Number(v.price), taxRatePercent: Number(v.taxRatePercent), ...(editing === 'new' ? {} : { isActive: Boolean(v.isActive) }) };
+    if (editing === 'new') await api.post('/ipd/service-charges', body); else await api.put(`/ipd/service-charges/${editing.id}`, body);
+    notify.success('Saved.'); setEditing(null); reload();
+  });
+  return (
+    <Card>
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-line p-4">
+        <p className="text-sm text-muted">Services added to an admitted patient’s bill (doctor visits, procedures, nursing…). Bed charges come from the ward’s daily rate.</p>
+        <Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> Add service</Button>
+      </div>
+      <DataTable loading={loading} error={error} rows={data} empty={<EmptyState title="No services yet" />} onRowClick={(c) => setEditing(c)}
+        columns={[
+          { key: 'name', label: 'Service', render: (c) => <span className="font-medium">{c.name} {!c.isActive && <Badge tone="gray">Inactive</Badge>}</span> },
+          { key: 'category', label: 'Category', render: (c) => CHARGE_CATS.find(([k]) => k === c.category)?.[1] },
+          { key: 'price', label: 'Price', className: 'text-right', render: (c) => (Number(c.price) ? money(c.price) : <span className="text-gold-700">Set price</span>) },
+          { key: 'taxRatePercent', label: 'GST', className: 'text-right', render: (c) => `${Number(c.taxRatePercent)}%` },
+          { key: 'del', label: <span className="sr-only">Delete</span>, className: 'text-right', render: (c) => <Button size="sm" variant="ghost" aria-label={`Delete ${c.name}`} onClick={async (e) => { e.stopPropagation(); if (window.confirm(`Delete ${c.name}? Only possible if it was never billed.`) && await withToast(() => api.del(`/ipd/service-charges/${c.id}`), 'Deleted.')) reload(); }}><LuTrash2 aria-hidden /></Button> },
+        ]} />
+      <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'Add service' : 'Edit service'} size="sm"
+        footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
+        <form onSubmit={save} className="space-y-3" noValidate>
+          <Input label="Name" required {...f.bind('name')} error={f.errors.name} />
+          <Select label="Category" options={CHARGE_CATS.map(([value, label]) => ({ value, label }))} {...f.bind('category')} />
+          <div className="grid grid-cols-2 gap-3">
+            <Input label="Price (₹)" type="number" min="0" step="0.01" {...f.bind('price')} error={f.errors.price} />
+            <Select label="GST" options={['0', '5', '12', '18'].map((x) => ({ value: x, label: `${x}%` }))} {...f.bind('taxRatePercent')} />
+          </div>
+          {editing !== 'new' && <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-forest-800" checked={Boolean(f.values.isActive)} onChange={(e) => f.setValues((s) => ({ ...s, isActive: e.target.checked }))} /> Active</label>}
+          {f.formError && <Alert tone="error">{f.formError}</Alert>}
+        </form>
+      </Modal>
+    </Card>
+  );
+}
+
 export default function Ipd() {
   const { can } = useTenantAuth();
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'board';
   const { data: wards, loading, error, reload } = useApi(() => api.get('/ipd/wards'), []);
-  const tabs = [['board', 'Bed board'], ['admissions', 'Admissions'], ...(can('ipd.configure') ? [['setup', 'Wards & beds']] : [])];
+  const tabs = [['board', 'Bed board'], ['admissions', 'Admissions'], ...(can('ipd.configure') ? [['setup', 'Wards & beds'], ['charges', 'Service charges']] : [])];
   return (
     <>
       <PageHeader title="Admissions & beds" subtitle="Live bed occupancy, admission, transfer and discharge." />
@@ -226,7 +224,8 @@ export default function Ipd() {
       </div>
       {error && <Alert tone="error" className="mb-4">{error.message}</Alert>}
       {tab === 'board' && <BedBoard wards={wards} loading={loading} reload={reload} />}
-      {tab === 'admissions' && <Admissions wards={wards} reloadWards={reload} />}
+      {tab === 'admissions' && <Admissions />}
+      {tab === 'charges' && can('ipd.configure') && <ServiceCharges />}
       {tab === 'setup' && can('ipd.configure') && <WardSetup wards={wards} reload={reload} />}
     </>
   );

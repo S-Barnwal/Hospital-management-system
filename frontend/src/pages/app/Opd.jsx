@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LuPlus, LuStethoscope, LuArrowLeft, LuPrinter, LuLock, LuTrash2, LuFlaskConical, LuSave } from 'react-icons/lu';
+import { LuPlus, LuStethoscope, LuArrowLeft, LuPrinter, LuLock, LuTrash2, LuFlaskConical, LuSave, LuClipboardList, LuCalendarClock } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -9,6 +9,7 @@ import { age, date, dateTime, fullName, titleCase, todayIn } from '../../lib/for
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge, Textarea } from '../../components/ui.jsx';
 import { PatientPicker, DoctorSelect } from '../../components/Pickers.jsx';
 import { LabOrderModal } from './Lab.jsx';
+import { TemplatePicker, TemplateEditor } from './OpdExtras.jsx';
 
 function NewConsultation({ open, onClose, preset }) {
   const navigate = useNavigate();
@@ -54,7 +55,11 @@ export default function Opd() {
   return (
     <>
       <PageHeader title="OPD" subtitle="Consultations, vitals, diagnosis and prescriptions."
-        actions={can('opd.write') && <Button onClick={() => { setPreset(null); setParams({ new: '1' }); }}><LuPlus aria-hidden /> New consultation</Button>} />
+        actions={<div className="flex flex-wrap gap-2">
+          <Button variant="ghost" to="/app/follow-ups"><LuCalendarClock aria-hidden /> Follow-ups</Button>
+          <Button variant="outline" to="/app/rx-templates"><LuClipboardList aria-hidden /> Templates</Button>
+          {can('opd.write') && <Button onClick={() => { setPreset(null); setParams({ new: '1' }); }}><LuPlus aria-hidden /> New consultation</Button>}
+        </div>} />
 
       {can('opd.write') && waiting.length > 0 && (
         <Card className="mb-6 p-4">
@@ -113,6 +118,8 @@ export function ConsultationDetail() {
   const [labOpen, setLabOpen] = useState(false);
   const [finalizeOpen, setFinalizeOpen] = useState(false);
   const [charge, setCharge] = useState(true);
+  const [tplOpen, setTplOpen] = useState(false);
+  const [saveTpl, setSaveTpl] = useState(null);
 
   useEffect(() => {
     if (!c) return;
@@ -197,7 +204,11 @@ export function ConsultationDetail() {
           <Card className="p-5">
             <div className="mb-3 flex items-center justify-between">
               <h2 className="font-display text-lg font-semibold">℞ Prescription</h2>
-              {!locked && <Button size="sm" variant="outline" onClick={() => setForm((f) => ({ ...f, prescriptions: [...f.prescriptions, { ...blankRx }] }))}><LuPlus aria-hidden /> Add medicine</Button>}
+              <div className="flex flex-wrap gap-2 print:hidden">
+                {!locked && <Button size="sm" variant="outline" onClick={() => setTplOpen(true)}><LuClipboardList aria-hidden /> Apply template</Button>}
+                {can('opd.write') && form.prescriptions.some((p) => p.medicineName.trim()) && <Button size="sm" variant="ghost" onClick={() => setSaveTpl({ name: form.diagnosis.split(/[,.;\n]/)[0].slice(0, 80), doctorId: c.doctor.id, diagnosis: form.diagnosis, advice: form.advice, items: form.prescriptions.filter((p) => p.medicineName.trim()) })}>Save as template</Button>}
+                {!locked && <Button size="sm" variant="outline" onClick={() => setForm((f) => ({ ...f, prescriptions: [...f.prescriptions, { ...blankRx }] }))}><LuPlus aria-hidden /> Add medicine</Button>}
+              </div>
             </div>
             {form.prescriptions.length === 0 && <p className="text-sm text-muted">No medicines prescribed.</p>}
             <div className="space-y-3">
@@ -243,6 +254,17 @@ export function ConsultationDetail() {
             Add consultation fee (₹{Number(c.doctor.consultationFee)}) to the patient’s bill</label>
         )}
       </Modal>
+      <TemplatePicker open={tplOpen} doctorId={c.doctor.id} onClose={() => setTplOpen(false)} onApply={(t) => {
+        setForm((f) => ({
+          ...f,
+          diagnosis: f.diagnosis || t.diagnosis || '',
+          advice: f.advice || t.advice || '',
+          prescriptions: [...f.prescriptions.filter((p) => p.medicineName.trim()), ...t.items.map((m) => ({ ...blankRx, ...Object.fromEntries(Object.entries(m).map(([k, v]) => [k, v ?? ''])) }))],
+        }));
+        setTplOpen(false);
+        notify.info(`“${t.name}” added — review it and press Save draft.`);
+      }} />
+      <TemplateEditor open={Boolean(saveTpl)} initial={saveTpl} onClose={() => setSaveTpl(null)} onSaved={() => setSaveTpl(null)} />
       {labOpen && <LabOrderModal open onClose={() => setLabOpen(false)} preset={{ patient: { id: p.id, label: `${p.patientNumber} — ${fullName(p.firstName, p.lastName)}` }, doctorId: c.doctor.id, consultationId: c.id }} onSaved={() => { setLabOpen(false); reload(); }} />}
       <p className="mt-8 hidden text-xs print:block">Printed {date(new Date(), tz)} · {c.number}</p>
     </>

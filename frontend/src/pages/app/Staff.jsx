@@ -6,12 +6,16 @@ import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, cx } from '../../components/ui.jsx';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import EmailInput from '../../components/EmailInput.jsx';
+import { formatPhone } from '../../lib/contact.js';
 
 const TYPES = ['doctor', 'nurse', 'receptionist', 'lab_technician', 'pharmacist', 'accountant', 'admin', 'other'];
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
 function StaffForm({ open, staff, departments, onClose, onSaved, defaultType = 'doctor' }) {
-  const blank = { staffType: defaultType, fullName: '', departmentId: '', designation: '', specialization: '', registrationNumber: '', phone: '', email: '', consultationFee: '', isActive: true };
+  const { me } = useTenantAuth();
+  const blank = { staffType: defaultType, fullName: '', departmentId: '', designation: '', specialization: '', registrationNumber: '', phone: '', email: '', consultationFee: '', room: '', isActive: true };
   const f = useForm(blank);
   useEffect(() => {
     if (open) f.setValues(staff ? { ...blank, ...Object.fromEntries(Object.entries(staff).map(([k, v]) => [k, v ?? ''])), departmentId: staff.departmentId ? String(staff.departmentId) : '' } : blank);
@@ -21,7 +25,7 @@ function StaffForm({ open, staff, departments, onClose, onSaved, defaultType = '
     const body = {
       staffType: v.staffType, fullName: v.fullName, departmentId: v.departmentId ? Number(v.departmentId) : null,
       designation: v.designation || null, specialization: v.specialization || null, registrationNumber: v.registrationNumber || null,
-      phone: v.phone || null, email: v.email || null, consultationFee: v.consultationFee === '' ? null : Number(v.consultationFee),
+      phone: v.phone || null, email: v.email || null, consultationFee: v.consultationFee === '' ? null : Number(v.consultationFee), room: v.room?.trim() || null,
       ...(staff ? { isActive: Boolean(v.isActive) } : {}),
     };
     if (staff) await api.patch(`/hr/staff/${staff.id}`, body); else await api.post('/hr/staff', body);
@@ -40,9 +44,10 @@ function StaffForm({ open, staff, departments, onClose, onSaved, defaultType = '
           <Input label="Specialisation" {...f.bind('specialization')} error={f.errors.specialization} />
           <Input label="Registration no." hint="Medical council registration" {...f.bind('registrationNumber')} error={f.errors.registrationNumber} />
           <Input label="Consultation fee (₹)" type="number" min="0" step="0.01" {...f.bind('consultationFee')} error={f.errors.consultationFee} />
+          <Input label="Room / cabin" maxLength={30} placeholder="e.g. 3 or OPD-2" {...f.bind('room')} error={f.errors.room} hint="Shown on the token TV screen." />
         </>}
-        <Input label="Phone" type="tel" {...f.bind('phone')} error={f.errors.phone} />
-        <Input label="E-mail" type="email" {...f.bind('email')} error={f.errors.email} />
+        <PhoneInput label="Phone" defaultCountry={me?.tenant?.country} {...f.bind('phone')} error={f.errors.phone} />
+        <EmailInput label="E-mail" {...f.bind('email')} error={f.errors.email} />
         {staff && <label className="flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" className="accent-forest-800" checked={Boolean(f.values.isActive)} onChange={(e) => f.setValues((s) => ({ ...s, isActive: e.target.checked }))} /> Active</label>}
         {f.formError && <Alert tone="error" className="sm:col-span-2">{f.formError}</Alert>}
       </form>
@@ -156,7 +161,7 @@ export default function Staff() {
               { key: 'type', label: tab === 'doctor' ? 'Specialisation' : 'Role', render: (s) => (tab === 'doctor' ? s.specialization || '—' : titleCase(s.staffType)) },
               { key: 'departmentName', label: 'Department' },
               ...(tab === 'doctor' ? [{ key: 'fee', label: 'Fee', render: (s) => money(s.consultationFee) }] : []),
-              { key: 'phone', label: 'Phone' },
+              { key: 'phone', label: 'Phone', render: (s) => formatPhone(s.phone) },
               { key: 'isActive', label: 'Status', render: (s) => <Badge tone={s.isActive ? 'green' : 'gray'}>{s.isActive ? 'Active' : 'Inactive'}</Badge> },
               { key: 'act', label: <span className="sr-only">Actions</span>, className: 'text-right', render: (s) => can('staff.write') && (
                 <div className="flex justify-end gap-1">

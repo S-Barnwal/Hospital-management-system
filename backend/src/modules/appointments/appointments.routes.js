@@ -9,7 +9,9 @@ import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
 import { localToUtc, localDayRangeUtc, localDateString, tzOffsetMinutes } from '../../utils/time.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
+import { sendAppointmentMessage } from '../../notify/appointments.js';
 import { canTransition, withinSchedule, freeSlots } from './appointments.logic.js';
+import { issueToken } from '../queue/queue.service.js';
 
 const router = Router();
 router.use(requireTenant);
@@ -45,7 +47,7 @@ router.get('/', requirePermission('appointments.read'), asyncHandler(async (req,
   const where = `WHERE a.TenantId = @tid AND (@from IS NULL OR a.StartAt >= @from) AND (@to IS NULL OR a.StartAt < @to)
     AND (@doctorId IS NULL OR a.DoctorId = @doctorId) AND (@departmentId IS NULL OR a.DepartmentId = @departmentId)
     AND (@patientId IS NULL OR a.PatientId = @patientId) AND (@status IS NULL OR a.Status = @status)`;
-  const [rows, total] = await db.many(`
+  const [rows, total] = await db.many(`/* tenant-safe: TenantId filter is inside ${where} */ 
     SELECT ${LIST_COLS} ${LIST_FROM} ${where} ORDER BY ${lq.orderBy} OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
     SELECT COUNT(*) AS total FROM hms.Appointments a ${where};`, params);
   res.json({ data: rows, meta: pageMeta(lq, total[0].total) });
@@ -78,9 +80,24 @@ router.get('/availability', requirePermission('appointments.read'), asyncHandler
   });
 }));
 
+/** Calendar view: every appointment between two local dates (max 42 days), oldest first. */
+router.get('/calendar', requirePermission('appointments.read'), asyncHandler(async (req, res) => {
+  const from = ymd.safeParse(req.query.from);
+  const to = ymd.safeParse(req.query.to);
+  if (!from.success || !to.success || to.data < from.data) throw badRequest('Choose a valid date range.');
+  if ((Date.parse(`${to.data}T00:00:00Z`) - Date.parse(`${from.data}T00:00:00Z`)) / 86400000 > 42) throw badRequest('The calendar can show at most 6 weeks at a time.');
+  const rows = await db.query(`SELECT TOP 1500 ${LIST_COLS} ${LIST_FROM}
+    WHERE a.TenantId = @tid AND a.StartAt >= @start AND a.StartAt < @end AND (@doctorId IS NULL OR a.DoctorId = @doctorId)
+      AND (@showCancelled = 1 OR a.Status NOT IN ('cancelled','no_show'))
+    ORDER BY a.StartAt`, {
+    tid: req.ctx.tenantId, start: localDayRangeUtc(req.ctx.timezone, from.data).start, end: localDayRangeUtc(req.ctx.timezone, to.data).end,
+    doctorId: req.query.doctorId ? idParam(req.query.doctorId, 'doctorId') : null, showCancelled: req.query.cancelled === 'true' ? 1 : 0 });
+  res.json({ data: rows, meta: { from: from.data, to: to.data, timezone: req.ctx.timezone } });
+}));
+
 const bookingSchema = z.object({
-  patientId: z.number().int().positive(),
-  doctorId: z.number().int().positive(),
+  patientId: z.coerce.number().int().positive(),
+  doctorId: z.coerce.number().int().positive(),
   date: ymd,
   time: hhmm,
   durationMinutes: z.number().int().min(5).max(240).default(15),
@@ -136,6 +153,8 @@ router.post('/', requirePermission('appointments.write'), validate(bookingSchema
     await auditTenant(req, 'appointment.created', 'appointment', row.AppointmentId, { number: row.AppointmentNumber }, tx);
     return row;
   }, sqlLib.ISOLATION_LEVEL.SERIALIZABLE);
+  // After commit, in the background: WhatsApp confirmation to the patient (never blocks or fails the booking).
+  sendAppointmentMessage(req.ctx.tenantId, created.AppointmentId, 'confirmed').catch((e) => console.error('[appointments] confirmation failed:', e.message));
   res.status(201).json({ data: { id: created.AppointmentId, number: created.AppointmentNumber } });
 }));
 
@@ -147,7 +166,7 @@ router.get('/:id', requirePermission('appointments.read'), asyncHandler(async (r
 }));
 
 router.post('/:id/reschedule', requirePermission('appointments.write'),
-  validate(z.object({ date: ymd, time: hhmm, durationMinutes: z.number().int().min(5).max(240).optional(), doctorId: z.number().int().positive().optional() }).strict()),
+  validate(z.object({ date: ymd, time: hhmm, durationMinutes: z.number().int().min(5).max(240).optional(), doctorId: z.coerce.number().int().positive().optional() }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
@@ -183,7 +202,16 @@ router.post('/:id/status', requirePermission('appointments.write'),
                      WHERE TenantId = @tid AND AppointmentId = @id`, { tid: req.ctx.tenantId, id, status, reason: cancelReason ?? null });
       await auditTenant(req, `appointment.${status}`, 'appointment', id, null, tx);
     });
-    res.json({ data: { ok: true } });
+    // Checking in hands the patient a token for the doctor's queue (once per appointment). Never fails the check-in.
+    let token = null;
+    if (status === 'checked_in') {
+      token = await withTransaction(async (tx) => {
+        const a = await tx.one('SELECT DoctorId, PatientId FROM hms.Appointments WHERE TenantId = @tid AND AppointmentId = @id', { tid: req.ctx.tenantId, id });
+        return issueToken(tx, { tenantId: req.ctx.tenantId, timezone: req.ctx.timezone, userId: req.ctx.userId, queueKey: `doctor:${a.DoctorId}`,
+          patientId: a.PatientId, appointmentId: id });
+      }).catch((e) => { console.error('[appointments] token not issued:', e.message); return null; });
+    }
+    res.json({ data: { ok: true, token: token ? { number: token.number, queueKey: token.queueKey } : null } });
   }));
 
 export default router;

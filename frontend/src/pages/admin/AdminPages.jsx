@@ -1,12 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { LuBuilding2, LuCalendarCheck, LuCreditCard, LuMessageSquare, LuArrowLeft, LuTrendingUp, LuPlus, LuTrash2 } from 'react-icons/lu';
+import { LuBuilding2, LuCalendarCheck, LuCreditCard, LuMessageSquare, LuArrowLeft, LuTrendingUp, LuPlus, LuTrash2, LuGift } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useAdminAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { date, dateTime, money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatCard, StatusBadge, Textarea } from '../../components/ui.jsx';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import EmailInput from '../../components/EmailInput.jsx';
+import Combobox from '../../components/Combobox.jsx';
+import MapView from '../../components/MapView.jsx';
+import { formatPhone, countryName } from '../../lib/contact.js';
 
 function usePaged(path, filters) {
   const [page, setPage] = useState(1);
@@ -72,7 +77,7 @@ export function Tenants() {
         <DataTable rowKey="TenantId" loading={loading} error={error} rows={data} onRowClick={(t) => navigate(`/admin/tenants/${t.TenantId}`)} empty={<EmptyState icon={LuBuilding2} title="No hospitals found" />}
           columns={[
             { key: 'Name', label: 'Hospital', render: (t) => <div><p className="font-medium text-ink">{t.Name}</p><p className="text-xs text-muted">{t.Slug}</p></div> },
-            { key: 'City', label: 'City' },
+            { key: 'City', label: 'Location', render: (t) => [t.City, t.State].filter(Boolean).join(', ') || '—' },
             { key: 'PlanName', label: 'Plan', render: (t) => t.PlanName || '—' },
             { key: 'CurrentPeriodEnd', label: 'Period ends', render: (t) => date(t.CurrentPeriodEnd) },
             { key: 'Status', label: 'Status', render: (t) => <StatusBadge status={t.Status} /> },
@@ -103,7 +108,10 @@ export function TenantDetail() {
         actions={admin.role === 'super_admin' && (t.Status === 'active'
           ? <Button variant="danger" onClick={() => setAction('suspended')}>Suspend</Button>
           : <Button onClick={() => setAction('active')}>Reactivate</Button>)} />
-      <div className="mb-4 flex items-center gap-2"><StatusBadge status={t.Status} />{t.SuspendedReason && <span className="text-sm text-muted">Reason: {t.SuspendedReason}</span>}</div>
+      <div className="mb-4 flex flex-wrap items-center gap-2"><StatusBadge status={t.Status} />
+        {t.subscriptions[0]?.IsTrial && <Badge tone="gold">Free trial</Badge>}{t.subscriptions[0]?.IsFree && <Badge tone="green">Free plan</Badge>}
+        {t.SuspendedReason && <span className="text-sm text-muted">Reason: {t.SuspendedReason}</span>}</div>
+      <BranchGroupCard tenant={t} canEdit={admin.role === 'super_admin'} onSaved={reload} />
       <div className="grid gap-4 sm:grid-cols-4">
         <StatCard label="Active users" value={t.usage.activeUsers} />
         <StatCard label="Patients" value={t.usage.patients} />
@@ -127,7 +135,19 @@ export function TenantDetail() {
             { key: 'InvoiceNumber', label: 'Invoice' }, { key: 'Status', label: 'Status', render: (p) => <StatusBadge status={p.Status} /> }]} />
         </Card>
       </div>
-      <Card className="mt-6 p-5 text-sm"><p className="font-semibold">Owner(s)</p>{t.owners.map((o) => <p key={o.Email} className="text-muted">{o.FullName} · {o.Email}</p>)}</Card>
+      <div className="mt-6 grid gap-6 lg:grid-cols-2">
+        <Card className="p-5 text-sm">
+          <p className="font-semibold">Owner(s)</p>{t.owners.map((o) => <p key={o.Email} className="text-muted">{o.FullName} · {o.Email}</p>)}
+          <p className="mt-4 font-semibold">Contact & location</p>
+          <p className="text-muted">{[t.Email, formatPhone(t.Phone)].filter(Boolean).join(' · ') || '—'}</p>
+          <p className="text-muted">{[t.City, t.State, t.Country && countryName(t.Country), t.PostalCode].filter(Boolean).join(', ') || 'Location not set'}</p>
+          {t.Latitude != null && <a className="mt-1 inline-block text-xs font-semibold text-forest-700 underline" target="_blank" rel="noopener noreferrer"
+            href={`https://www.openstreetmap.org/?mlat=${t.Latitude}&mlon=${t.Longitude}#map=17/${t.Latitude}/${t.Longitude}`}>Open in map</a>}
+        </Card>
+        {t.Latitude != null
+          ? <MapView markers={[{ id: t.TenantId, lat: Number(t.Latitude), lng: Number(t.Longitude), title: t.Name }]} height={220} zoom={14} />
+          : <Card className="grid place-items-center p-5 text-sm text-muted">The hospital has not placed its pin on the map yet.</Card>}
+      </div>
       <Modal open={Boolean(action)} onClose={() => setAction(null)} title={action === 'active' ? 'Reactivate hospital' : 'Suspend hospital'} size="sm"
         footer={<><Button variant="ghost" onClick={() => setAction(null)}>Cancel</Button><Button variant={action === 'active' ? 'primary' : 'danger'} disabled={reason.trim().length < 3} onClick={apply}>Confirm</Button></>}>
         <p className="mb-3 text-sm text-muted">{action === 'active' ? 'Users will be able to sign in again.' : 'All users are signed out immediately. Data is kept.'}</p>
@@ -138,6 +158,31 @@ export function TenantDetail() {
   );
 }
 
+/** Which hospital group (multi-branch) this hospital belongs to. */
+function BranchGroupCard({ tenant, canEdit, onSaved }) {
+  const { data: groups } = useApi(() => api.get('/admin/groups'), []);
+  const [edit, setEdit] = useState(null);
+  const current = groups?.find((g) => g.id === tenant.GroupId);
+  return (
+    <Card className="mb-4 flex flex-wrap items-center justify-between gap-3 p-4 text-sm">
+      <p><span className="font-semibold">Group:</span> {current ? `${current.name}${tenant.BranchName ? ` · ${tenant.BranchName}` : ''} (${current.hospitals.length} hospital${current.hospitals.length === 1 ? '' : 's'})` : 'Not in a group (single hospital)'}</p>
+      {canEdit && <Button size="sm" variant="outline" onClick={() => setEdit({ groupId: tenant.GroupId ?? '', branchName: tenant.BranchName ?? '' })}>Change group</Button>}
+      {edit && (
+        <Modal open size="sm" onClose={() => setEdit(null)} title="Hospital group (branches)"
+          footer={<><Button variant="ghost" onClick={() => setEdit(null)}>Cancel</Button><Button onClick={async () => {
+            if (await withToast(() => api.put(`/admin/tenants/${tenant.TenantId}/group`, { groupId: edit.groupId ? Number(edit.groupId) : null, branchName: edit.branchName.trim() || null }), 'Group updated.')) { setEdit(null); onSaved(); }
+          }}>Save</Button></>}>
+          <div className="space-y-3">
+            <Select label="Group" placeholder="No group" options={(groups || []).map((g) => ({ value: g.id, label: g.name }))} value={edit.groupId} onChange={(e) => setEdit((x) => ({ ...x, groupId: e.target.value }))} />
+            <Input label="Branch name" placeholder="e.g. Andheri branch" value={edit.branchName} onChange={(e) => setEdit((x) => ({ ...x, branchName: e.target.value }))} />
+            <p className="text-xs text-muted">Branches stay fully separate workspaces. Owners and admins with an account in several branches see their headline figures together. Create groups under <Link className="underline" to="/admin/groups">Hospital groups</Link>.</p>
+          </div>
+        </Modal>
+      )}
+    </Card>
+  );
+}
+
 function PlanEditor({ plan, onClose, onSaved }) {
   const f = useForm(null);
   const [features, setFeatures] = useState([]);
@@ -145,7 +190,7 @@ function PlanEditor({ plan, onClose, onSaved }) {
     if (!plan) return;
     f.setValues({ name: plan.name, tagline: plan.tagline || '', description: plan.description || '', monthlyPrice: plan.monthlyPrice ?? '', annualPrice: plan.annualPrice ?? '',
       taxRatePercent: plan.taxRatePercent, maxStaffUsers: plan.limits.staffUsers ?? '', maxBranches: plan.limits.branches ?? '', contactSales: plan.contactSales,
-      popular: plan.popular, isActive: plan.isActive, sortOrder: plan.sortOrder });
+      popular: plan.popular, isActive: plan.isActive, sortOrder: plan.sortOrder, trialDays: plan.trialDays ?? 0 });
     setFeatures(plan.features.map((x) => ({ ...x })));
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [plan]);
@@ -154,7 +199,7 @@ function PlanEditor({ plan, onClose, onSaved }) {
     await api.put(`/admin/plans/${plan.id}`, {
       name: v.name, tagline: v.tagline || null, description: v.description || null, monthlyPrice: n(v.monthlyPrice), annualPrice: n(v.annualPrice),
       taxRatePercent: Number(v.taxRatePercent), maxStaffUsers: n(v.maxStaffUsers), maxBranches: n(v.maxBranches), contactSales: Boolean(v.contactSales),
-      popular: Boolean(v.popular), isActive: Boolean(v.isActive), sortOrder: Number(v.sortOrder), features,
+      popular: Boolean(v.popular), isActive: Boolean(v.isActive), sortOrder: Number(v.sortOrder), trialDays: Number(v.trialDays || 0), features,
     });
     notify.success('Plan saved.');
     onSaved();
@@ -172,7 +217,9 @@ function PlanEditor({ plan, onClose, onSaved }) {
         <Input label="Tax rate %" type="number" step="0.01" {...f.bind('taxRatePercent')} />
         <Input label="Sort order" type="number" {...f.bind('sortOrder')} />
         <Input label="Max staff users (blank = unlimited)" type="number" {...f.bind('maxStaffUsers')} />
-        <Input label="Max branches (blank = unlimited)" type="number" {...f.bind('maxBranches')} />
+        <Input label="Max branches (blank = unlimited)" type="number" {...f.bind('maxBranches')} hint="How many hospitals one group may have on this plan." />
+        <Input label="Free trial (days, 0 = no trial)" type="number" min="0" max="90" {...f.bind('trialDays')} error={f.errors.trialDays}
+          hint="New hospitals can start without paying; after the trial they renew like any paid plan. One trial per e-mail / phone." />
         <div className="flex flex-wrap gap-5 sm:col-span-2">{check('contactSales', 'Contact sales (no online purchase)')}{check('popular', 'Mark as popular')}{check('isActive', 'Active')}</div>
         <div className="sm:col-span-2">
           <p className="label">Features</p>
@@ -198,20 +245,40 @@ export function Plans() {
   const { admin } = useAdminAuth();
   const { data, loading, error, reload } = useApi(() => api.get('/admin/plans'), []);
   const [editing, setEditing] = useState(null);
+  const [freeMode, setFreeMode] = useState(null); // { free, plan|null }
+  const priced = (data || []).filter((p) => !p.contactSales);
+  const allFree = priced.length > 0 && priced.every((p) => p.isFree);
+  const anyFreeNow = priced.some((p) => p.isFree);
+  const isSuper = admin.role === 'super_admin';
   return (
     <>
-      <PageHeader title="Plans" subtitle="Prices and features shown on the public pricing page. Changes apply to new purchases and renewals." />
+      <PageHeader title="Plans" subtitle="Prices and features shown on the public pricing page. Changes apply to new purchases and renewals."
+        actions={isSuper && priced.length > 0 && (
+          allFree
+            ? <Button variant="outline" onClick={() => setFreeMode({ free: false, plan: null })}>Start charging (all plans)</Button>
+            : <Button variant="gold" onClick={() => setFreeMode({ free: true, plan: null })}><LuGift aria-hidden /> Make all plans free</Button>
+        )} />
       {error && <Alert tone="error">{error.message}</Alert>}
+      {anyFreeNow && (
+        <Alert tone="success" className="mb-4" title="Free-for-now mode is ON">
+          The website shows a "Hurray! Free for now" banner and hospitals on the free plans register without paying.
+          {` ${priced.reduce((n, p) => n + (p.freeHospitals || 0), 0)} hospital(s) are on a free subscription.`}
+        </Alert>
+      )}
       <div className="grid gap-4 lg:grid-cols-3">
         {loading && <Skeleton className="h-48" />}
         {data?.map((p) => (
           <Card key={p.id} className="p-6">
-            <div className="flex items-start justify-between"><h2 className="font-display text-xl font-semibold">{p.name}</h2><div className="flex gap-1">{p.popular && <Badge tone="gold">Popular</Badge>}<Badge tone={p.isActive ? 'green' : 'gray'}>{p.isActive ? 'Active' : 'Hidden'}</Badge></div></div>
+            <div className="flex items-start justify-between"><h2 className="font-display text-xl font-semibold">{p.name}</h2><div className="flex gap-1">{p.popular && <Badge tone="gold">Popular</Badge>}{p.isFree && <Badge tone="gold">Free now</Badge>}<Badge tone={p.isActive ? 'green' : 'gray'}>{p.isActive ? 'Active' : 'Hidden'}</Badge></div></div>
             <p className="mt-1 text-sm text-muted">{p.tagline}</p>
             <p className="mt-4 text-sm">{p.contactSales ? 'Contact sales' : <>{money(p.monthlyPrice)} / mo · {money(p.annualPrice)} / yr <span className="text-muted">+{p.taxRatePercent}% tax</span></>}</p>
             <p className="mt-1 text-xs text-muted">Users: {p.limits.staffUsers ?? 'unlimited'} · Branches: {p.limits.branches ?? 'unlimited'}</p>
-            {admin.role === 'super_admin' && (
-              <div className="mt-4 flex gap-2">
+            {p.isFree && <p className="mt-1 text-xs font-medium text-gold-700">Free since {date(p.freeSince)} · {p.freeHospitals} hospital(s) on free</p>}
+            {isSuper && (
+              <div className="mt-4 flex flex-wrap gap-2">
+                {!p.contactSales && (p.isFree
+                  ? <Button variant="outline" size="sm" onClick={() => setFreeMode({ free: false, plan: p })}>Start charging</Button>
+                  : <Button variant="gold" size="sm" onClick={() => setFreeMode({ free: true, plan: p })}><LuGift aria-hidden /> Make free</Button>)}
                 <Button variant="outline" size="sm" onClick={() => setEditing(p)}>Edit plan</Button>
                 <Button variant="ghost" size="sm" onClick={async () => { if (window.confirm(`Delete plan ${p.name}? Only possible if nobody has bought it.`) && (await withToast(() => api.del(`/admin/plans/${p.id}`), 'Plan deleted.'))) reload(); }}>Delete</Button>
               </div>
@@ -220,7 +287,41 @@ export function Plans() {
         ))}
       </div>
       <PlanEditor plan={editing} onClose={() => setEditing(null)} onSaved={() => { setEditing(null); reload(); }} />
+      <FreeModeModal mode={freeMode} onClose={() => setFreeMode(null)} onDone={() => { setFreeMode(null); reload(); }} />
     </>
+  );
+}
+
+/** Confirm "make free" / "start charging". Charging asks for a notice period for hospitals already on free. */
+function FreeModeModal({ mode, onClose, onDone }) {
+  const [days, setDays] = useState(7);
+  const [busy, setBusy] = useState(false);
+  if (!mode) return null;
+  const target = mode.plan ? `the ${mode.plan.name} plan` : 'all plans';
+  const run = async () => {
+    setBusy(true);
+    const ok = await withToast(() => api.post('/admin/plans/free-mode', { free: mode.free, ...(mode.plan ? { planId: mode.plan.id } : {}), ...(mode.free ? {} : { noticeDays: Number(days) }) }),
+      mode.free ? 'Free mode is on. The website now shows the free banner.' : 'Charging started. Free hospitals have been given their notice period.');
+    setBusy(false);
+    if (ok) onDone();
+  };
+  return (
+    <Modal open onClose={onClose} title={mode.free ? `Make ${target} free?` : `Start charging for ${target}?`}
+      footer={<><Button variant="ghost" onClick={onClose}>Cancel</Button><Button variant={mode.free ? 'gold' : 'primary'} loading={busy} onClick={run}>{mode.free ? 'Yes, make free' : 'Start charging'}</Button></>}>
+      {mode.free ? (
+        <ul className="list-disc space-y-1 pl-5 text-sm text-forest-900">
+          <li>The public website shows <strong>"Hurray! Free for now — register your hospital"</strong>.</li>
+          <li>New hospitals register <strong>without payment</strong> and get their own separate, private workspace straight away.</li>
+          <li>One free workspace per owner e-mail. Contact-sales plans stay as they are.</li>
+          <li>You can start charging again at any time from here.</li>
+        </ul>
+      ) : (
+        <div className="space-y-3 text-sm text-forest-900">
+          <p>New sign-ups will have to pay again. Hospitals that joined for free keep working for a notice period, get reminder e-mails, and are then asked to pay from their Subscription page (their data is never deleted).</p>
+          <Input label="Notice period (days)" type="number" min={0} max={90} value={days} onChange={(e) => setDays(e.target.value)} hint="0–90 days. Default 7." />
+        </div>
+      )}
+    </Modal>
   );
 }
 
@@ -279,7 +380,7 @@ function DemoDetail({ id, onClose, onSaved }) {
       {loading || !data ? <Skeleton className="h-40 w-full" /> : (
         <div className="space-y-5">
           <dl className="grid gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
-            {[['Contact', data.ContactName], ['E-mail', data.Email], ['Phone', data.Phone], ['City', data.City], ['Facility', titleCase(data.FacilityType || '')], ['Expected users', data.ExpectedUsers],
+            {[['Contact', data.ContactName], ['E-mail', data.Email], ['Phone', formatPhone(data.Phone)], ['Location', [data.City, data.State, data.Country].filter(Boolean).join(', ')], ['Facility', titleCase(data.FacilityType || '')], ['Expected users', data.ExpectedUsers],
               ['Preferred time', dateTime(data.PreferredAt)], ['Received', dateTime(data.CreatedAt)]].map(([k, v]) => <div key={k}><dt className="text-muted">{k}</dt><dd className="font-medium">{v || '—'}</dd></div>)}
           </dl>
           {data.Message && <p className="rounded-lg bg-ivory p-3 text-sm">{data.Message}</p>}
@@ -338,7 +439,7 @@ export function Messages() {
       <Card>
         <DataTable rowKey="ContactMessageId" loading={loading} error={error} rows={data} empty={<EmptyState icon={LuMessageSquare} title="No messages" />} columns={[
           { key: 'CreatedAt', label: 'Received', render: (m) => dateTime(m.CreatedAt) },
-          { key: 'Name', label: 'From', render: (m) => <div><p className="font-medium">{m.Name}</p><p className="text-xs text-muted">{m.Email} {m.Phone}</p></div> },
+          { key: 'Name', label: 'From', render: (m) => <div><p className="font-medium">{m.Name}</p><p className="text-xs text-muted">{m.Email} {formatPhone(m.Phone)}</p></div> },
           { key: 'Message', label: 'Message', render: (m) => <div className="max-w-md"><p className="font-medium">{m.Subject}</p><p className="line-clamp-2 text-muted">{m.Message}</p></div> }]} />
         <Pagination meta={meta} onPage={setPage} />
       </Card>
@@ -375,10 +476,12 @@ export function AuditLogs() {
 export function AdminSettings() {
   const { admin } = useAdminAuth();
   const { data, loading } = useApi(() => api.get('/admin/settings'), []);
-  const f = useForm({ 'brand.name': '', 'contact.email': '', 'contact.phone': '', 'contact.address': '' });
+  const f = useForm({ 'brand.name': '', 'contact.email': '', 'contact.phone': '', 'contact.address': '',
+    'invoice.legal_name': '', 'invoice.gstin': '', 'invoice.state': '', 'invoice.sac': '', 'invoice.footer': '', 'support.email': '' });
+  const { data: inStates } = useApi(() => api.get('/geo/states?country=IN'), []);
   const [saved, setSaved] = useState(false);
   useEffect(() => { if (data) f.setValues((s) => ({ ...s, ...data })); /* eslint-disable-next-line */ }, [data]);
-  const save = f.submit(async (v) => { setSaved(false); await api.put('/admin/settings', v); setSaved(true); notify.success('Website settings saved.'); });
+  const save = f.submit(async (v) => { setSaved(false); await api.put('/admin/settings', Object.fromEntries(Object.entries(v).map(([k, x]) => [k, x ?? '']))); setSaved(true); notify.success('Website settings saved.'); });
   return (
     <>
       <PageHeader title="Website settings" subtitle="Contact details shown on the public website footer and Contact page." />
@@ -387,9 +490,20 @@ export function AdminSettings() {
           <form onSubmit={save} className="space-y-4">
             <fieldset disabled={admin.role !== 'super_admin'} className="space-y-4">
               <Input label="Brand name" {...f.bind('brand.name')} />
-              <Input label="Contact e-mail" {...f.bind('contact.email')} />
-              <Input label="Contact phone" {...f.bind('contact.phone')} />
-              <Input label="Address" {...f.bind('contact.address')} />
+              <EmailInput label="Contact e-mail" {...f.bind('contact.email')} error={f.errors['contact.email']} />
+              <PhoneInput label="Contact phone" {...f.bind('contact.phone')} error={f.errors['contact.phone']} />
+              <Input label="Address" {...f.bind('contact.address')} hint="Also printed on invoices as the seller address." />
+              <EmailInput label="Support inbox (ticket alerts)" {...f.bind('support.email')} error={f.errors['support.email']} hint="New hospital messages on support tickets are e-mailed here. Empty = the contact e-mail." />
+              <p className="eyebrow pt-4">Invoices (seller details)</p>
+              <Input label="Legal / registered business name" placeholder="Saitix Technologies Pvt. Ltd." {...f.bind('invoice.legal_name')} error={f.errors['invoice.legal_name']} />
+              <Input label="GSTIN" maxLength={15} placeholder="27ABCDE1234F1Z5" {...f.bind('invoice.gstin')} error={f.errors['invoice.gstin']}
+                hint="With a GSTIN, invoices are titled “Tax Invoice” and show CGST+SGST (same state) or IGST (other state)." />
+              <Combobox label="State of GST registration" value={f.values['invoice.state'] || ''} options={(inStates || []).map((x) => ({ value: x.name, label: x.name, keywords: x.code }))}
+                onChange={(v) => f.setValues((s0) => ({ ...s0, 'invoice.state': v }))} placeholder="Search state…" error={f.errors['invoice.state']}
+                hint="Leave empty to take it from the GSTIN (first two digits, e.g. 09 = Uttar Pradesh)." />
+              <Input label="Default SAC code" inputMode="numeric" placeholder="997331" {...f.bind('invoice.sac')} error={f.errors['invoice.sac']} hint="997331 = licensing services for the right to use software (common for SaaS). Confirm with your CA." />
+              <Input label="Invoice footer" {...f.bind('invoice.footer')} />
+              <p className="text-xs text-muted">Changes apply to invoices issued from now on; already-issued invoices keep the details they were issued with.</p>
             </fieldset>
             {f.formError && <Alert tone="error">{f.formError}</Alert>}
             {saved && <Alert tone="success">Saved.</Alert>}

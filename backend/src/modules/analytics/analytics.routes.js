@@ -27,11 +27,11 @@ router.get('/', requirePermission('reports.read'), asyncHandler(async (req, res)
   if (f.has('billing')) {
     const [tot, daily, methods, exp, expDaily, expCat] = await db.many(`
       SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE 0 END), 0) AS payments, ISNULL(SUM(CASE WHEN Kind = 'refund' THEN Amount ELSE 0 END), 0) AS refunds
-        FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end;
+        FROM hms.MoneyReceived WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end;
       SELECT ${day('ReceivedAt')} AS date, SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END) AS net
-        FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end GROUP BY ${day('ReceivedAt')};
+        FROM hms.MoneyReceived WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end GROUP BY ${day('ReceivedAt')};
       SELECT Method AS method, SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END) AS amount, COUNT(*) AS [count]
-        FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end GROUP BY Method ORDER BY amount DESC;
+        FROM hms.MoneyReceived WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end GROUP BY Method ORDER BY amount DESC;
       SELECT ISNULL(SUM(Amount), 0) AS total FROM hms.Expenses WHERE TenantId = @tid AND ExpenseDate BETWEEN @from AND @to;
       SELECT CONVERT(CHAR(10), ExpenseDate, 23) AS date, SUM(Amount) AS amount FROM hms.Expenses WHERE TenantId = @tid AND ExpenseDate BETWEEN @from AND @to GROUP BY ExpenseDate;
       SELECT c.Name AS category, SUM(e.Amount) AS amount FROM hms.Expenses e JOIN hms.ExpenseCategories c ON c.TenantId = e.TenantId AND c.ExpenseCategoryId = e.ExpenseCategoryId

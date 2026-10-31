@@ -52,7 +52,12 @@ The Packages list shows: **Code · Package name · Department · # Tests · Indi
 
 Outside doctors who send patients: name, qualification, clinic, phone, e-mail and **commission %**. The list shows how many orders each has sent and the business value. Commission payable for any period is in **Analytics**.
 
+### Panels (optional)
+In **Tests**, click ☰ **Parameters** on a test to list its lines — e.g. CBC: Haemoglobin (g/dL, 13–17), WBC (/µL, 4000–11000)… Each line has a unit and either a numeric range or a text normal value. When an order is created, the parameter list is copied onto the order, so later changes to the panel don't alter old reports.
+
 ## Step 2 — Create the order (Laboratory → Lab orders → New order)
+
+**Home collection:** tick *Collect sample at home*, enter address, phone, date/time slot, collector and a collection charge (added to the order total). The order then appears in **Laboratory → Home collections**; when the collector marks it **Collected**, the samples are marked collected and the order moves to *Sample collected*.
 
 1. **Patient** — search by name, phone or number (register them first under Patients if new).
 2. **Hospital doctor** (optional) and/or **Referred by** (outside referral doctor).
@@ -86,6 +91,7 @@ To collect a balance later: open the order → **Collect payment**.
 
 - New samples are **Pending**. Click **Collect** when the sample is taken.
 - Shortcut: on the order page, **Collect all samples**.
+- **Barcode labels**: on the order page click **Sample labels** → *Print labels*. One 50 × 25 mm label per tube with patient name, age/sex, sample number as a **barcode**, sample type, tests and date. Any USB barcode scanner can then scan a tube into the *Samples* search box.
 - When **all** samples of an order are collected, the order automatically moves to **Sample collected**.
 
 ## Step 4 — Receive in the lab
@@ -95,6 +101,8 @@ When the tube reaches the lab bench, click **Receive**. (Optional but useful to 
 **Reject** a bad sample (haemolysed, insufficient, wrong container) with a reason. The order goes back to waiting, and the sample shows **Recollect**. Rejection is only possible before results are entered.
 
 ## Step 5 — Enter results (Results & reports → Awaiting results)
+
+For a panel you type a value per line; each line is flagged (low/high/critical) on its own and the test's overall flag is the worst line. Numeric results build the patient's **Lab trends** chart (patient page).
 
 Open the order → type each result → **Save results**. Numeric results are compared with the reference range and flagged **normal / low / high** automatically. When every test has a result, the order becomes **Completed**.
 
@@ -112,6 +120,10 @@ Open the order → **Print report**. The printout has:
 - *Verified by* signature line, and *End of report*
 
 Use the browser's *Save as PDF* option in the print window to e-mail it.
+
+### Send the report to the patient
+
+On a **verified** order click **Send on WhatsApp** or **Send by e-mail** (the buttons are at the top of the order page; they stay greyed out until the results are verified, and the patient must have a mobile number / e-mail on their record). The patient receives a secure link (valid 7 days). When they open it, they tap *Send me the code*, enter the 6-digit code that arrives on the same WhatsApp/e-mail, and the report opens — with a *Save as PDF / Print* button. The report is never attached to the message itself, so a forwarded message alone is not enough to read it. Setup: [chapter 15](15-messaging-setup.md).
 
 ## Cancelling an order
 

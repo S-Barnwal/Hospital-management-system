@@ -15,10 +15,9 @@ import { seedPermissions } from '../../src/db/seed.js';
 import { provisionTenant } from '../../src/modules/tenants/provisioning.js';
 import { hashPassword } from '../../src/utils/password.js';
 import { finalizePaidOrder } from '../../src/modules/onboarding/onboarding.service.js';
+import { assertSafeDatabase, retireTestHospitals } from './_safety.js';
 
-if (config.isProd || !/test/i.test(config.db.database || '')) {
-  throw new Error('Refusing to run integration tests: database name must contain "test" and NODE_ENV must not be production.');
-}
+const IS_TEST_DB = assertSafeDatabase(config);
 
 let server;
 let base;
@@ -80,6 +79,7 @@ before(async () => {
 
 after(async () => {
   server?.close();
+  await retireTestHospitals(db, [A.slug, B.slug], IS_TEST_DB).catch(() => {});
   await closePool();
 });
 

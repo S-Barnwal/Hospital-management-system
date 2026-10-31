@@ -3,7 +3,8 @@ import { NavLink, Outlet, Navigate, useLocation, useNavigate, Link } from 'react
 import {
   LuLayoutDashboard, LuUsers, LuCalendarClock, LuStethoscope, LuUserCog, LuBedDouble, LuReceipt, LuFlaskConical, LuPill,
   LuChartBar, LuShieldCheck, LuSettings, LuCreditCard, LuLogOut, LuMenu, LuHistory, LuBell, LuChevronRight,
-  LuTestTubes, LuClipboardCheck, LuPackage, LuListChecks, LuUserRound, LuWallet, LuReceiptText, LuChartLine, LuDatabaseBackup,
+  LuTestTubes, LuClipboardCheck, LuPackage, LuListChecks, LuUserRound, LuWallet, LuReceiptText, LuChartLine, LuDatabaseBackup, LuMessagesSquare,
+  LuCalendarCheck2, LuPiggyBank, LuVault, LuHouse, LuCalendarDays, LuTicket, LuLifeBuoy, LuNetwork,
 } from 'react-icons/lu';
 import { useTenantAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Logo.jsx';
@@ -17,14 +18,18 @@ export const APP_NAV = [
   { section: 'Front office' },
   { to: '/app/patients', label: 'Patients', icon: LuUsers, perm: 'patients.read' },
   { to: '/app/appointments', label: 'Appointments', icon: LuCalendarClock, perm: 'appointments.read' },
+  { to: '/app/queue', label: 'Token queue', icon: LuTicket, perm: ['queue.manage', 'appointments.read'] },
   { to: '/app/staff', label: 'Doctors & staff', icon: LuUserCog, perm: 'staff.read' },
+  { to: '/app/hr', label: 'Attendance & payroll', icon: LuCalendarDays, perm: ['staff.read', 'hr.attendance', 'hr.leave', 'hr.payroll'] },
   { section: 'Clinical' },
   { to: '/app/opd', label: 'OPD', icon: LuStethoscope, perm: 'opd.read', feature: 'opd' },
+  { to: '/app/follow-ups', label: 'Follow-ups', icon: LuCalendarCheck2, perm: 'opd.read', feature: 'opd' },
   { to: '/app/admissions', label: 'Admissions & beds', icon: LuBedDouble, perm: 'ipd.read', feature: 'ipd' },
   { to: '/app/pharmacy', label: 'Pharmacy', icon: LuPill, perm: 'pharmacy.read', feature: 'pharmacy' },
   { section: 'Laboratory' },
   { to: '/app/laboratory', label: 'Lab orders', icon: LuFlaskConical, perm: 'lab.read', feature: 'laboratory' },
   { to: '/app/lab-samples', label: 'Samples', icon: LuTestTubes, perm: 'lab.read', feature: 'laboratory' },
+  { to: '/app/home-collections', label: 'Home collections', icon: LuHouse, perm: 'lab.read', feature: 'laboratory' },
   { to: '/app/lab-results', label: 'Results & reports', icon: LuClipboardCheck, perm: 'lab.read', feature: 'laboratory' },
   { to: '/app/lab-tests', label: 'Tests', icon: LuListChecks, perm: 'lab.read', feature: 'laboratory' },
   { to: '/app/lab-packages', label: 'Packages', icon: LuPackage, perm: 'lab.read', feature: 'laboratory' },
@@ -32,6 +37,8 @@ export const APP_NAV = [
   { section: 'Finance' },
   { to: '/app/billing', label: 'Billing', icon: LuReceipt, perm: 'billing.read', feature: 'billing' },
   { to: '/app/payments', label: 'Payments', icon: LuWallet, perm: 'billing.read', feature: 'billing' },
+  { to: '/app/deposits', label: 'Deposits', icon: LuPiggyBank, perm: 'billing.read', feature: 'billing' },
+  { to: '/app/cash-closing', label: 'Cash closing', icon: LuVault, perm: 'billing.read', feature: 'billing' },
   { to: '/app/expenses', label: 'Expenses', icon: LuReceiptText, perm: 'expenses.read', feature: 'billing' },
   { section: 'Insights' },
   { to: '/app/reports', label: 'Reports', icon: LuChartBar, perm: 'reports.read', feature: 'reports' },
@@ -39,20 +46,28 @@ export const APP_NAV = [
   { section: 'Administration' },
   { to: '/app/users-roles', label: 'Users & roles', icon: LuShieldCheck, perm: 'users.read' },
   { to: '/app/audit-log', label: 'Audit log', icon: LuHistory, perm: 'audit.read' },
+  { to: '/app/message-log', label: 'Message log', icon: LuMessagesSquare, perm: 'audit.read' },
   { to: '/app/backups', label: 'Backups', icon: LuDatabaseBackup, perm: 'backups.manage' },
   { to: '/app/settings', label: 'Settings', icon: LuSettings, perm: 'settings.read' },
   { to: '/app/subscription', label: 'Subscription', icon: LuCreditCard, perm: 'subscription.read' },
+  { to: '/app/branches', label: 'Branches', icon: LuNetwork, perm: 'branches.view', onlyIf: 'inGroup' },
+  { to: '/app/support', label: 'Help & support', icon: LuLifeBuoy, perm: 'support.use' },
 ];
 
-function Sidebar({ can, hasFeature, onNavigate, facilityType }) {
+/** A nav/guard permission is one key, or a list meaning "any of these". */
+export const allowedBy = (can, perm) => (Array.isArray(perm) ? perm.some((p) => can(p)) : can(perm));
+
+function Sidebar({ can, hasFeature, onNavigate, facilityType, tenant }) {
+  // `onlyIf` hides an item unless the hospital has that flag (e.g. Branches only for hospitals in a group).
+  const visible = (n) => allowedBy(can, n.perm) && (!n.onlyIf || Boolean(tenant?.[n.onlyIf]));
   const items = arrangeNav(APP_NAV, facilityType).filter((n, i, arr) => {
     if (n.section) {
       // hide a section header when the user can see nothing under it
       const next = arr.slice(i + 1);
       const end = next.findIndex((x) => x.section);
-      return next.slice(0, end === -1 ? undefined : end).some((x) => can(x.perm));
+      return next.slice(0, end === -1 ? undefined : end).some(visible);
     }
-    return can(n.perm);
+    return visible(n);
   });
   return (
     <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4" aria-label="Hospital">
@@ -94,7 +109,7 @@ export default function AppLayout() {
           <p className="truncate text-[11px] text-forest-300">{me.tenant.slug}</p>
         </div>
       </div>
-      <Sidebar can={can} hasFeature={hasFeature} facilityType={me.tenant.facilityType} onNavigate={() => setOpen(false)} />
+      <Sidebar can={can} hasFeature={hasFeature} facilityType={me.tenant.facilityType} tenant={me.tenant} onNavigate={() => setOpen(false)} />
       <div className="border-t border-white/10 p-3">
         <button onClick={async () => { await logout(); navigate('/login'); }} className="flex w-full items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium text-forest-100/80 hover:bg-white/5 hover:text-white">
           <LuLogOut className="h-4 w-4" aria-hidden /> Sign out
@@ -112,7 +127,7 @@ export default function AppLayout() {
           <aside className="absolute inset-y-0 left-0 w-72">{sidebar}</aside>
         </div>
       )}
-      <div className="lg:pl-64 print:pl-0">
+      <div className="min-w-0 lg:pl-64 print:pl-0">
         <header className="sticky top-0 z-20 flex h-16 items-center gap-3 border-b border-line bg-white/90 px-4 backdrop-blur sm:px-6 print:hidden">
           <button className="rounded-md p-2 lg:hidden" onClick={() => setOpen(true)} aria-label="Open menu"><LuMenu className="h-5 w-5" /></button>
           <nav aria-label="Breadcrumb" className="flex min-w-0 items-center gap-1 text-sm text-muted">
@@ -135,7 +150,7 @@ export default function AppLayout() {
           </div>
         </header>
         <Toasts />
-        <main className="px-4 py-6 sm:px-6 lg:px-8">
+        <main className="min-w-0 overflow-x-clip px-4 py-6 sm:px-6 lg:px-8">
           {sub?.state === 'grace' && <Alert tone="warning" className="mb-5">Your subscription period has ended — {sub.daysLeft} day(s) of grace left. <Link className="font-semibold underline" to="/app/subscription">Renew now</Link></Alert>}
           {sub?.state === 'expired' && <Alert tone="error" className="mb-5">Subscription expired. Your data is safe but read-only. <Link className="font-semibold underline" to="/app/subscription">Renew to continue</Link></Alert>}
           <Outlet />
@@ -155,7 +170,7 @@ export function RequirePerm({ perm, feature, children }) {
       </Alert>
     );
   }
-  if (!can(perm)) return <Alert tone="warning" title="No access">Your role does not include access to this page. Ask your hospital administrator.</Alert>;
+  if (!allowedBy(can, perm)) return <Alert tone="warning" title="No access">Your role does not include access to this page. Ask your hospital administrator.</Alert>;
   return children;
 }
 

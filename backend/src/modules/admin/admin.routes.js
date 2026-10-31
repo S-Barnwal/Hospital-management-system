@@ -11,6 +11,11 @@ import { idParam, dateParam } from '../../utils/params.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { auditPlatform } from '../../utils/audit.js';
 import { serialisePlan } from '../public/public.routes.js';
+import { setPlansFree } from '../onboarding/onboarding.service.js';
+import { isValidEmail, parsePhone } from '../../utils/contact.js';
+import { GSTIN_RE } from '../../utils/constants.js';
+import { stateFromGstin } from '../invoices/invoice.logic.js';
+import platformRoutes from './platform.routes.js';
 
 const router = Router();
 router.use(requirePlatformAdmin);
@@ -56,8 +61,8 @@ router.get('/tenants', asyncHandler(async (req, res) => {
 router.get('/tenants/:id', asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [tenant, subs, payments, usage, owners] = await db.many(`
-    SELECT TenantId, Slug, Name, Email, Phone, City, FacilityType, Status, Timezone, Currency, SuspendedReason, CreatedAt FROM hms.Tenants WHERE TenantId = @id;
-    SELECT s.SubscriptionId, p.Name AS PlanName, s.BillingInterval, s.Status, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.GraceDays
+    SELECT TenantId, Slug, Name, Email, Phone, City, State, Country, PostalCode, Latitude, Longitude, FacilityType, Status, Timezone, Currency, SuspendedReason, CreatedAt, GroupId, BranchName FROM hms.Tenants WHERE TenantId = @id;
+    SELECT s.SubscriptionId, p.Name AS PlanName, s.BillingInterval, s.Status, s.CurrentPeriodStart, s.CurrentPeriodEnd, s.GraceDays, s.IsFree, s.IsTrial
       FROM hms.Subscriptions s JOIN hms.Plans p ON p.PlanId = s.PlanId WHERE s.TenantId = @id ORDER BY s.CurrentPeriodEnd DESC;
     SELECT p.PaymentId, p.Purpose, p.Provider, p.IsSandbox, p.Amount, p.Currency, p.Status, p.PaidAt, p.CreatedAt, i.InvoiceNumber
       FROM hms.Payments p LEFT JOIN hms.Invoices i ON i.PaymentId = p.PaymentId WHERE p.TenantId = @id ORDER BY p.CreatedAt DESC;
@@ -89,14 +94,55 @@ router.post('/tenants/:id/status', requireSuperAdmin,
     res.json({ data: { ok: true } });
   }));
 
+// ---------- Hospital map (business location only) ----------
+router.get('/hospital-locations', asyncHandler(async (_req, res) => {
+  const rows = await db.query(`/* tenant-safe: platform admin map across hospitals (name/address only, no patient data) */
+    SELECT t.TenantId, t.Name, t.Slug, t.Status, t.City, t.State, t.Country, t.PostalCode, t.Latitude, t.Longitude, t.LocationUpdatedAt, t.FacilityType,
+           sub.PlanName,
+           (SELECT SettingValue FROM hms.TenantSettings s WHERE s.TenantId = t.TenantId AND s.SettingKey = 'hospital.address') AS Address
+    FROM hms.Tenants t
+    OUTER APPLY (SELECT TOP 1 p.Name AS PlanName FROM hms.Subscriptions s JOIN hms.Plans p ON p.PlanId = s.PlanId
+                 WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
+    WHERE t.Status <> 'pending'
+    ORDER BY t.Name`);
+  res.json({ data: rows.map((r) => ({ ...r, Latitude: r.Latitude === null ? null : Number(r.Latitude), Longitude: r.Longitude === null ? null : Number(r.Longitude) })) });
+}));
+
 // ---------- Plans ----------
 router.get('/plans', asyncHandler(async (_req, res) => {
-  const [plans, features] = await db.many(`
+  const [plans, features, freeCounts] = await db.many(`
     SELECT * FROM hms.Plans ORDER BY SortOrder, PlanId;
-    SELECT PlanId, FeatureKey, Label, IsIncluded FROM hms.PlanFeatures ORDER BY SortOrder;`);
+    SELECT PlanId, FeatureKey, Label, IsIncluded FROM hms.PlanFeatures ORDER BY SortOrder;
+    /* tenant-safe: platform admin count across hospitals, no hospital data */
+    SELECT PlanId, COUNT(*) AS n FROM hms.Subscriptions WHERE IsFree = 1 AND Status IN ('active','past_due') GROUP BY PlanId;`);
+  const freeBy = new Map(freeCounts.map((r) => [r.PlanId, r.n]));
   res.json({ data: plans.map((p) => ({ ...serialisePlan(p, features), id: p.PlanId, isActive: Boolean(p.IsActive), sortOrder: p.SortOrder,
-    monthlyPrice: p.MonthlyPrice, annualPrice: p.AnnualPrice })) });
+    monthlyPrice: p.MonthlyPrice, annualPrice: p.AnnualPrice, freeSince: p.FreeSince, trialDays: Number(p.TrialDays || 0),
+    freeHospitals: freeBy.get(p.PlanId) ?? 0 })) });
 }));
+
+/**
+ * "Free for now" switch. planId omitted = every priced plan at once.
+ * free=false starts charging: hospitals on free subscriptions get `noticeDays` (default 7) and are then asked to renew.
+ */
+router.post('/plans/free-mode', requireSuperAdmin,
+  validate(z.object({
+    free: z.boolean(),
+    planId: z.coerce.number().int().positive().optional(),
+    noticeDays: z.coerce.number().int().min(0).max(90).default(7),
+  }).strict()),
+  asyncHandler(async (req, res) => {
+    const { free, planId, noticeDays } = req.body;
+    const result = await withTransaction(async (tx) => {
+      const ids = planId ? [planId]
+        : (await tx.query('SELECT PlanId FROM hms.Plans WHERE IsContactSales = 0')).map((r) => r.PlanId);
+      const r = await setPlansFree(tx, { planIds: ids, free, noticeDays });
+      await auditPlatform(req, free ? 'admin.plans_made_free' : 'admin.plans_charging_started', 'plan', planId ?? null,
+        { plans: r.changed, noticeDays: free ? null : noticeDays, hospitalsMovedToPaid: r.movedToPaid }, null, tx);
+      return r;
+    });
+    res.json({ data: result });
+  }));
 
 const money = z.union([z.number(), z.string()]).transform((v) => Number(v)).refine((v) => Number.isFinite(v) && v >= 0 && v < 1e10, 'Invalid amount')
   .transform((v) => v.toFixed(2));
@@ -113,17 +159,18 @@ const planSchema = z.object({
   popular: z.boolean(),
   isActive: z.boolean(),
   sortOrder: z.coerce.number().int().min(0).max(1000),
+  trialDays: z.coerce.number().int().min(0).max(90).default(0),
   features: z.array(z.object({ key: z.string().regex(/^[a-z_]{2,60}$/), label: z.string().trim().min(2).max(200), included: z.boolean() }).strict()).max(50),
 }).strict().refine((p) => p.contactSales || (p.monthlyPrice !== null && p.annualPrice !== null), 'Prices are required unless the plan is contact-sales.');
 
 async function savePlan(tx, planId, b) {
   await tx.exec(
     `UPDATE hms.Plans SET Name = @name, Tagline = @tag, Description = @desc, MonthlyPrice = @mp, AnnualPrice = @ap, TaxRatePercent = @tax,
-       MaxStaffUsers = @staff, MaxBranches = @branches, IsContactSales = @cs, IsPopular = @pop, IsActive = @active, SortOrder = @sort, UpdatedAt = SYSUTCDATETIME()
+       MaxStaffUsers = @staff, MaxBranches = @branches, IsContactSales = @cs, IsPopular = @pop, IsActive = @active, SortOrder = @sort, TrialDays = @trial, UpdatedAt = SYSUTCDATETIME()
      WHERE PlanId = @id`,
     { id: planId, name: b.name, tag: b.tagline ?? null, desc: b.description ?? null, mp: t.money(b.monthlyPrice), ap: t.money(b.annualPrice),
       tax: { type: sql.Decimal(5, 2), value: b.taxRatePercent }, staff: b.maxStaffUsers, branches: b.maxBranches,
-      cs: b.contactSales, pop: b.popular, active: b.isActive, sort: b.sortOrder });
+      cs: b.contactSales, pop: b.popular, active: b.isActive, sort: b.sortOrder, trial: b.trialDays ?? 0 });
   await tx.exec('DELETE FROM hms.PlanFeatures WHERE PlanId = @id', { id: planId });
   let i = 0;
   for (const f of b.features) {
@@ -214,7 +261,7 @@ router.get('/demo-requests/:id', asyncHandler(async (req, res) => {
 router.patch('/demo-requests/:id',
   validate(z.object({
     status: z.enum(['new', 'contacted', 'scheduled', 'completed', 'closed']).optional(),
-    assignedTo: z.number().int().positive().nullable().optional(),
+    assignedTo: z.coerce.number().int().positive().nullable().optional(),
     note: z.string().trim().min(1).max(2000).optional(),
   }).strict()),
   asyncHandler(async (req, res) => {
@@ -245,7 +292,7 @@ router.delete('/demo-requests/:id', requireSuperAdmin, asyncHandler(async (req, 
 
 router.delete('/plans/:id', requireSuperAdmin, asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
-  const used = await db.one(`SELECT (SELECT COUNT(*) FROM hms.Subscriptions WHERE PlanId = @id) + (SELECT COUNT(*) FROM hms.Payments WHERE PlanId = @id)
+  const used = await db.one(`/* tenant-safe: platform admin view across hospitals */ SELECT (SELECT COUNT(*) FROM hms.Subscriptions WHERE PlanId = @id) + (SELECT COUNT(*) FROM hms.Payments WHERE PlanId = @id)
                                   + (SELECT COUNT(*) FROM hms.OnboardingRequests WHERE PlanId = @id) AS n`, { id });
   if (used.n) return res.status(409).json({ error: { code: 'IN_USE', message: 'Hospitals have bought this plan. Hide it (set inactive) instead of deleting.' } });
   await withTransaction(async (tx) => {
@@ -286,13 +333,24 @@ router.get('/audit-logs', asyncHandler(async (req, res) => {
 }));
 
 // ---------- Platform settings (public website contact details, brand) ----------
-const SETTING_KEYS = ['contact.email', 'contact.phone', 'contact.address', 'brand.name'];
+const SETTING_KEYS = ['contact.email', 'contact.phone', 'contact.address', 'brand.name',
+  'invoice.legal_name', 'invoice.gstin', 'invoice.state', 'invoice.sac', 'invoice.footer', 'support.email'];
 router.get('/settings', asyncHandler(async (_req, res) => {
   const rows = await db.query('SELECT SettingKey, SettingValue FROM hms.PlatformSettings');
   res.json({ data: Object.fromEntries(rows.map((r) => [r.SettingKey, r.SettingValue])) });
 }));
 router.put('/settings', requireSuperAdmin,
-  validate(z.record(z.enum(SETTING_KEYS), z.string().trim().max(500))),
+  validate(z.record(z.enum(SETTING_KEYS), z.string().trim().max(500)).superRefine((v, ctx) => {
+    if (v['contact.email'] && !isValidEmail(v['contact.email'].toLowerCase())) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['contact.email'], message: 'Enter a valid e-mail address.' });
+    if (v['support.email'] && !isValidEmail(v['support.email'].toLowerCase())) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['support.email'], message: 'Enter a valid e-mail address.' });
+    if (v['contact.phone'] && !parsePhone(v['contact.phone'])) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['contact.phone'], message: 'Enter a valid phone number with country code.' });
+    if (v['invoice.gstin'] && !GSTIN_RE.test(v['invoice.gstin'].toUpperCase())) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['invoice.gstin'], message: 'Enter a valid 15-character GSTIN.' });
+    const gstState = v['invoice.gstin'] ? stateFromGstin(v['invoice.gstin'].toUpperCase()) : null;
+    if (gstState && v['invoice.state'] && v['invoice.state'].toLowerCase() !== gstState.toLowerCase()) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['invoice.state'], message: `This GSTIN is registered in ${gstState} (code ${v['invoice.gstin'].slice(0, 2)}). Choose ${gstState} or leave it empty.` });
+    }
+    if (v['invoice.sac'] && !/^\d{4,8}$/.test(v['invoice.sac'])) ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['invoice.sac'], message: 'SAC must be 4–8 digits.' });
+  }).transform((v) => ({ ...v, ...(v['contact.phone'] ? { 'contact.phone': parsePhone(v['contact.phone']).e164 } : {}), ...(v['invoice.gstin'] ? { 'invoice.gstin': v['invoice.gstin'].toUpperCase() } : {}) }))),
   asyncHandler(async (req, res) => {
     await withTransaction(async (tx) => {
       for (const [k, v] of Object.entries(req.body)) {
@@ -304,5 +362,8 @@ router.put('/settings', requireSuperAdmin,
     });
     res.json({ data: { ok: true } });
   }));
+
+// Phase 4: coupons, revenue, monitoring, sign-in history, support, hospital groups.
+router.use(platformRoutes);
 
 export default router;

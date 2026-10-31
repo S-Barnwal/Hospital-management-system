@@ -7,6 +7,7 @@ import { money, titleCase } from '../../lib/format.js';
 import { Alert, Button, Skeleton, cx } from '../../components/ui.jsx';
 import Reveal from '../../components/Reveal.jsx';
 import { PageHero } from './InfoPages.jsx';
+import { anyFree } from '../../components/FreeBanner.jsx';
 
 export default function Pricing() {
   const [interval, setBilling] = useState('monthly');
@@ -17,8 +18,10 @@ export default function Pricing() {
 
   return (
     <>
-      <PageHero eyebrow="Pricing" title="Simple plans for every size of hospital">
-        Prices exclude GST, which is shown before you pay. Cancel or change plans at renewal.
+      <PageHero eyebrow="Pricing" title={anyFree(plans) ? 'Hurray! Plans are free for now' : 'Simple plans for every size of hospital'}>
+        {anyFree(plans)
+          ? 'Register your hospital today at no cost — you get your own secure workspace straight away. We will e-mail you well before charging starts.'
+          : 'Prices exclude GST, which is shown before you pay. Cancel or change plans at renewal.'}
       </PageHero>
 
       <section className="container-page py-14">
@@ -51,6 +54,11 @@ export default function Pricing() {
                 <div className="mt-6 min-h-20">
                   {p.contactSales ? (
                     <><p className="font-display text-4xl font-semibold text-forest-950">Custom</p><p className="mt-1 text-sm text-muted">Tailored to your hospital</p></>
+                  ) : p.isFree ? (
+                    <>
+                      <p className="font-display text-4xl font-semibold text-forest-950">Free <span className="ml-1 align-middle rounded-full bg-gold-100 px-2 py-0.5 font-sans text-xs font-bold text-gold-700">for now</span></p>
+                      <p className="mt-1 text-xs text-muted">Normally <s>{money(q.subtotal, p.currency)} / {interval === 'monthly' ? 'month' : 'year'}</s> · no payment needed today</p>
+                    </>
                   ) : (
                     <>
                       <p className="font-display text-4xl font-semibold text-forest-950">{money(q.subtotal, p.currency)}<span className="font-sans text-base font-medium text-muted"> / {interval === 'monthly' ? 'month' : 'year'}</span></p>
@@ -68,7 +76,10 @@ export default function Pricing() {
                 <div className="mt-auto pt-8">
                   {p.contactSales
                     ? <Button variant="outline" className="w-full" to="/book-demo">Contact sales</Button>
-                    : <Button variant={p.popular ? 'gold' : 'primary'} className="w-full" onClick={() => navigate(`/register?plan=${p.code}&interval=${interval}`)}>Choose {p.name}</Button>}
+                    : <>
+                      <Button variant={p.popular ? 'gold' : 'primary'} className="w-full" onClick={() => navigate(`/register?plan=${p.code}&interval=${interval}`)}>{p.isFree ? `Register free — ${p.name}` : `Choose ${p.name}`}</Button>
+                      {p.trialDays > 0 && <button type="button" className="mt-2 w-full text-sm font-semibold text-forest-700 underline-offset-2 hover:underline" onClick={() => navigate(`/register?plan=${p.code}&interval=${interval}&trial=1`)}>or start a {p.trialDays}-day free trial</button>}
+                    </>}
                 </div>
               </Reveal>
             );

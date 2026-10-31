@@ -17,7 +17,7 @@ export const FACILITY_PROFILES = {
   diagnostic_centre: {
     label: 'Diagnostic centre',
     first: 'Laboratory',
-    hide: ['/app/opd', '/app/admissions'],
+    hide: ['/app/opd', '/app/follow-ups', '/app/admissions'],
     needs: ['laboratory', 'billing'],
     note: 'Laboratory is shown first; OPD and Admissions & beds are hidden.',
   },

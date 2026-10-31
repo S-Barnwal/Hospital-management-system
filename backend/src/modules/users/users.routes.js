@@ -10,6 +10,8 @@ import { auditTenant } from '../../utils/audit.js';
 import { hashPassword, passwordProblem } from '../../utils/password.js';
 import { PERMISSIONS } from '../rbac/permissions.js';
 import { assignmentProblem, roleEditProblem } from '../rbac/rbac.logic.js';
+import { emailSchema, optionalPhone } from '../../utils/contact.js';
+import { describeAgent } from '../../utils/loginEvents.js';
 
 const router = Router();
 router.use(requireTenant);
@@ -29,6 +31,18 @@ const actorOf = (ctx) => ({ userId: ctx.userId, isOwner: ctx.isOwner, permission
 router.get('/permissions', requirePermission('users.read'), (_req, res) => {
   res.json({ data: PERMISSIONS.map(([code, module, description]) => ({ code, module, description })) });
 });
+
+/** Sign-in history of this hospital's accounts (last 180 days). Unknown e-mails are not shown here (no tenant yet). */
+router.get('/login-history', requirePermission('users.read'), asyncHandler(async (req, res) => {
+  const userId = req.query.userId ? idParam(req.query.userId, 'userId') : null;
+  const ok = req.query.result === 'failed' ? 0 : req.query.result === 'ok' ? 1 : null;
+  const rows = await db.query(`SELECT TOP 300 e.LoginEventId AS id, e.UserId AS userId, u.FullName AS name, e.Email AS email, e.Success AS success,
+      e.Reason AS reason, e.Ip AS ip, e.UserAgent AS userAgent, e.CreatedAt AS createdAt
+    FROM hms.LoginEvents e LEFT JOIN hms.Users u ON u.TenantId = e.TenantId AND u.UserId = e.UserId
+    WHERE e.TenantId = @tid AND e.SubjectType = 'tenant' AND (@uid IS NULL OR e.UserId = @uid) AND (@ok IS NULL OR e.Success = @ok)
+    ORDER BY e.CreatedAt DESC`, { tid: req.ctx.tenantId, uid: userId, ok });
+  res.json({ data: rows.map(({ userAgent, ...r }) => ({ ...r, success: Boolean(r.success), device: describeAgent(userAgent) })) });
+}));
 
 router.get('/roles', requirePermission('users.read'), asyncHandler(async (req, res) => {
   res.json({ data: await loadRoles(db, req.ctx.tenantId) });
@@ -74,10 +88,10 @@ router.get('/', requirePermission('users.read'), asyncHandler(async (req, res) =
 
 const userSchema = z.object({
   fullName: z.string().trim().min(2).max(150),
-  email: z.string().trim().toLowerCase().email().max(254),
-  phone: z.string().trim().max(30).optional(),
+  email: emailSchema,
+  phone: optionalPhone,
   password: z.string().min(1).max(128),
-  roleIds: z.array(z.number().int().positive()).min(1).max(10),
+  roleIds: z.array(z.coerce.number().int().positive()).min(1).max(10),
 }).strict();
 
 router.post('/', requirePermission('users.manage'), validate(userSchema), asyncHandler(async (req, res) => {
@@ -112,7 +126,7 @@ router.patch('/:id', requirePermission('users.manage'),
   validate(z.object({
     fullName: z.string().trim().min(2).max(150).optional(),
     status: z.enum(['active', 'disabled']).optional(),
-    roleIds: z.array(z.number().int().positive()).min(1).max(10).optional(),
+    roleIds: z.array(z.coerce.number().int().positive()).min(1).max(10).optional(),
   }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);

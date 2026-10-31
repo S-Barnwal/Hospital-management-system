@@ -13,6 +13,8 @@ const DAY = 24 * 60 * 60 * 1000;
 export function subscriptionState(sub, now = new Date()) {
   if (!sub) return { state: 'none', daysLeft: null };
   if (sub.Status === 'cancelled') return { state: 'expired', daysLeft: 0 };
+  // On a free subscription of a plan that is STILL free, the hospital never lapses (the period is rolled forward).
+  if (sub.FreeNow) return { state: 'active', daysLeft: null, free: true, periodEnd: new Date(sub.CurrentPeriodEnd) };
   const end = new Date(sub.CurrentPeriodEnd).getTime();
   const graceEnd = end + (sub.GraceDays ?? 7) * DAY;
   const t = now.getTime();
@@ -23,7 +25,9 @@ export function subscriptionState(sub, now = new Date()) {
 
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS']);
 // Routes that must keep working even when the subscription has lapsed or the tenant is suspended.
-const ALWAYS_ALLOWED_PREFIXES = ['/api/v1/auth/', '/api/v1/tenant/me', '/api/v1/subscription'];
+const ALWAYS_ALLOWED_PREFIXES = ['/api/v1/auth/', '/api/v1/tenant/me', '/api/v1/subscription', '/api/v1/support/'];
+// A suspended or lapsed hospital must still be able to write to support (that is how it gets help).
+const WRITABLE_WHEN_BLOCKED = ['/api/v1/support/'];
 
 /**
  * Validates a tenant request. `row` is the DB result for (token user, token tenant, token session).
@@ -40,8 +44,9 @@ export function evaluateTenantAccess({ payload, row, hostSlug, method, path, now
   }
 
   const alwaysAllowed = ALWAYS_ALLOWED_PREFIXES.some((p) => path.startsWith(p));
+  const writableWhenBlocked = WRITABLE_WHEN_BLOCKED.some((p) => path.startsWith(p));
   if (row.TenantStatus === 'suspended' || row.TenantStatus === 'deactivated') {
-    if (!alwaysAllowed || !SAFE_METHODS.has(method)) {
+    if (!alwaysAllowed || (!SAFE_METHODS.has(method) && !writableWhenBlocked)) {
       throw forbidden('This hospital workspace is suspended. Please contact support.', 'TENANT_SUSPENDED');
     }
   } else if (row.TenantStatus !== 'active') {
@@ -49,7 +54,7 @@ export function evaluateTenantAccess({ payload, row, hostSlug, method, path, now
   }
 
   const sub = subscriptionState(row.SubPeriodEnd ? {
-    Status: row.SubStatus, CurrentPeriodEnd: row.SubPeriodEnd, GraceDays: row.SubGraceDays,
+    Status: row.SubStatus, CurrentPeriodEnd: row.SubPeriodEnd, GraceDays: row.SubGraceDays, FreeNow: Boolean(row.SubFreeNow),
   } : null, now);
   if ((sub.state === 'expired' || sub.state === 'none') && !SAFE_METHODS.has(method) && !alwaysAllowed) {
     throw new HttpError(402, 'SUBSCRIPTION_EXPIRED', 'Your subscription has expired. Data is safe and read-only until you renew.');

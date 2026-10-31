@@ -12,7 +12,7 @@ import { parseListQuery } from '../../src/utils/pagination.js';
 describe('Pricing (integer paise, no floats)', () => {
   const plan = { MonthlyPrice: 2999, AnnualPrice: 29990, TaxRatePercent: 18, Currency: 'INR', IsContactSales: false };
   test('GST-exclusive quote', () => {
-    assert.deepEqual(quote(plan, 'monthly'), { currency: 'INR', subtotal: '2999.00', tax: '539.82', total: '3538.82', totalMinor: 353882, taxRatePercent: 18 });
+    assert.deepEqual(quote(plan, 'monthly'), { currency: 'INR', subtotal: '2999.00', discount: '0.00', tax: '539.82', total: '3538.82', totalMinor: 353882, taxRatePercent: 18 });
     assert.equal(quote(plan, 'annual').total, '35388.20');
   });
   test('contact-sales plans cannot be quoted', () => assert.throws(() => quote({ ...plan, IsContactSales: true }, 'monthly')));

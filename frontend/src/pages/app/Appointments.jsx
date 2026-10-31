@@ -7,6 +7,8 @@ import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { fullName, time, todayIn, titleCase } from '../../lib/format.js';
 import { Alert, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Spinner, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
+import { formatPhone } from '../../lib/contact.js';
+import { AppointmentCalendar, OnlineRequests } from './FrontDesk.jsx';
 
 function useDoctors() {
   return useApi(() => api.get('/hr/staff?type=doctor&pageSize=100'), []);
@@ -57,7 +59,7 @@ function PatientPicker({ value, onChange, error }) {
           {data.map((p) => (
             <li key={p.id}><button type="button" className="w-full px-3 py-2 text-left text-sm hover:bg-forest-50"
               onClick={() => onChange({ id: p.id, label: `${p.patientNumber} — ${fullName(p.firstName, p.lastName)}` })}>
-              <span className="font-mono text-xs text-forest-700">{p.patientNumber}</span> {fullName(p.firstName, p.lastName)} <span className="text-muted">{p.phone}</span>
+              <span className="font-mono text-xs text-forest-700">{p.patientNumber}</span> {fullName(p.firstName, p.lastName)} <span className="text-muted">{formatPhone(p.phone)}</span>
             </button></li>
           ))}
         </ul>
@@ -66,7 +68,7 @@ function PatientPicker({ value, onChange, error }) {
   );
 }
 
-function BookingModal({ open, onClose, onSaved, tz, presetPatientId, existing }) {
+function BookingModal({ open, onClose, onSaved, tz, presetPatientId, presetDoctorId, presetDate, existing }) {
   const doctors = useDoctors();
   const [patient, setPatient] = useState(null);
   const f = useForm({ doctorId: '', date: todayIn(tz), time: '', durationMinutes: '15', visitType: 'opd', reason: '' });
@@ -77,6 +79,9 @@ function BookingModal({ open, onClose, onSaved, tz, presetPatientId, existing })
       f.setValues({ doctorId: String(existing.doctorId), date: todayIn(tz), time: '', durationMinutes: '15', visitType: existing.visitType, reason: existing.reason || '' });
       setPatient({ id: existing.patientId, label: `${existing.patientNumber} — ${fullName(existing.patientFirstName, existing.patientLastName)}` });
     } else if (presetPatientId) {
+      // From "Follow-ups → Book": doctor and (future) date filled in too.
+      const d = /^\d{4}-\d{2}-\d{2}$/.test(presetDate || '') && presetDate >= todayIn(tz) ? presetDate : todayIn(tz);
+      f.setValues((s) => ({ ...s, ...(presetDoctorId ? { doctorId: String(presetDoctorId) } : {}), date: d, visitType: presetDoctorId ? 'follow_up' : s.visitType }));
       api.get(`/patients/${presetPatientId}`).then((r) => setPatient({ id: r.data.id, label: `${r.data.patientNumber} — ${fullName(r.data.firstName, r.data.lastName)}` })).catch(() => {});
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -127,11 +132,17 @@ export default function Appointments() {
   const [actionError, setActionError] = useState(null);
   const doctors = useDoctors();
   useEffect(() => setPage(1), [filters]);
-  const { data, meta, loading, error, reload } = useApi(() => api.get(`/appointments${qs({ ...filters, page, pageSize: 25 })}`), [filters, page]);
+  const view = ['calendar', 'online'].includes(params.get('view')) ? params.get('view') : 'list';
+  const { data, meta, loading, error, reload } = useApi(() => (view === 'list' ? api.get(`/appointments${qs({ ...filters, page, pageSize: 25 })}`) : Promise.resolve({ data: [] })), [filters, page, view]);
+  const { data: pending } = useApi(() => api.get('/booking/requests?status=pending'), [view]);
 
   const setStatus = async (a, status, cancelReason) => {
     setActionError(null);
-    try { await api.post(`/appointments/${a.id}/status`, { status, ...(cancelReason ? { cancelReason } : {}) }); notify.success(`Appointment ${a.number} ${status.replace('_', ' ')}.`); reload(); } catch (e) { notify.error(e.message); }
+    try {
+      const r = await api.post(`/appointments/${a.id}/status`, { status, ...(cancelReason ? { cancelReason } : {}) });
+      notify.success(r.data?.token ? `${a.number} checked in — token ${r.data.token.number}.` : `Appointment ${a.number} ${status.replace('_', ' ')}.`);
+      reload();
+    } catch (e) { notify.error(e.message); }
   };
 
   return (
@@ -139,7 +150,14 @@ export default function Appointments() {
       <PageHeader title="Appointments" subtitle={`All times shown in ${tz}.`}
         actions={can('appointments.write') && <Button onClick={() => setParams({ new: '1' })}><LuPlus aria-hidden /> Book appointment</Button>} />
       {actionError && <Alert tone="error" className="mb-4">{actionError}</Alert>}
-      <Card>
+      <div className="mb-4 flex w-full overflow-x-auto rounded-lg border border-line bg-white p-1 sm:w-fit" role="tablist">
+        {[['list', 'List'], ['calendar', 'Calendar'], ['online', `Online requests${pending?.length ? ` (${pending.length})` : ''}`]].map(([k, l]) => (
+          <button key={k} role="tab" aria-selected={view === k} onClick={() => setParams(k === 'list' ? {} : { view: k })}
+            className={cx('whitespace-nowrap rounded-md px-4 py-1.5 text-sm font-semibold', view === k ? 'bg-forest-900 text-white' : 'text-forest-800 hover:bg-forest-50')}>{l}</button>))}
+      </div>
+      {view === 'calendar' && <AppointmentCalendar doctors={doctors.data || []} refreshKey={params.get('new')} canBook={can('appointments.write')} onBook={(date) => setParams({ view: 'calendar', new: '1', date })} />}
+      {view === 'online' && <OnlineRequests />}
+      {view === 'list' && <Card>
         <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-4">
           <Input label="Date" type="date" value={filters.date} onChange={(e) => setFilters((s) => ({ ...s, date: e.target.value }))} />
           <Select label="Doctor" placeholder="All doctors" value={filters.doctorId} onChange={(e) => setFilters((s) => ({ ...s, doctorId: e.target.value }))}
@@ -166,10 +184,10 @@ export default function Appointments() {
             ) },
           ]} />
         <Pagination meta={meta} onPage={setPage} />
-      </Card>
+      </Card>}
 
-      <BookingModal open={params.get('new') === '1'} tz={tz} presetPatientId={params.get('patientId')}
-        onClose={() => setParams({})} onSaved={() => { setParams({}); notify.success('Appointment booked.'); reload(); }} />
+      <BookingModal open={params.get('new') === '1'} tz={tz} presetPatientId={params.get('patientId')} presetDoctorId={params.get('doctorId')} presetDate={params.get('date')}
+        onClose={() => setParams(view === 'list' ? {} : { view })} onSaved={() => { setParams(view === 'list' ? {} : { view }); notify.success('Appointment booked.'); reload(); }} />
       {rescheduling && <BookingModal open tz={tz} existing={rescheduling} onClose={() => setRescheduling(null)} onSaved={() => { setRescheduling(null); notify.success('Appointment rescheduled.'); reload(); }} />}
       <CancelDialog appt={cancelling} onClose={() => setCancelling(null)} onConfirm={async (reason) => { await setStatus(cancelling, 'cancelled', reason); setCancelling(null); }} />
     </>

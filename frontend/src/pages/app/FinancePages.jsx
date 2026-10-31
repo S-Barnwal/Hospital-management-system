@@ -1,13 +1,15 @@
 // Payments register and Expenses (with categories). All data is this hospital's only.
 import { useEffect, useState } from 'react';
 import { Link } from 'react-router-dom';
-import { LuPlus, LuPencil, LuTrash2, LuWallet, LuReceipt, LuTags } from 'react-icons/lu';
+import { LuPlus, LuPencil, LuTrash2, LuWallet, LuReceipt, LuTags, LuRepeat, LuPaperclip } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { date, dateTime, fullName, money, todayIn } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, StatCard, Textarea } from '../../components/ui.jsx';
+import Attachments from '../../components/Attachments.jsx';
+import RecurringExpenses from './RecurringExpenses.jsx';
 
 const METHODS = ['cash', 'upi', 'card', 'bank', 'other'];
 const methodOptions = METHODS.map((m) => ({ value: m, label: m.toUpperCase() }));
@@ -99,6 +101,8 @@ export function Expenses() {
   const { data, meta, loading, error, reload } = useApi(() => api.get(`/expenses${qs({ ...filters, q, page })}`), [filters.from, filters.to, filters.categoryId, filters.method, q, page]);
   const [editing, setEditing] = useState(null);
   const [catsOpen, setCatsOpen] = useState(false);
+  const [filesFor, setFilesFor] = useState(null);
+  const [recurringOpen, setRecurringOpen] = useState(false);
   const f = useForm({});
   useEffect(() => {
     if (editing) f.setValues(editing === 'new' ? { expenseDate: todayIn(tz), categoryId: '', amount: '', method: 'cash', paidTo: '', reference: '', notes: '' }
@@ -116,7 +120,7 @@ export function Expenses() {
   return (
     <>
       <PageHeader title="Expenses" subtitle="Record the hospital’s running costs. Analytics uses these to show profit."
-        actions={can('expenses.write') && <div className="flex gap-2"><Button variant="outline" onClick={() => setCatsOpen(true)}><LuTags aria-hidden /> Categories</Button><Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> New expense</Button></div>} />
+        actions={can('expenses.write') && <div className="flex flex-wrap gap-2"><Button variant="outline" onClick={() => setRecurringOpen(true)}><LuRepeat aria-hidden /> Recurring</Button><Button variant="outline" onClick={() => setCatsOpen(true)}><LuTags aria-hidden /> Categories</Button><Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> New expense</Button></div>} />
       <div className="mb-4 grid gap-4 sm:grid-cols-2">
         <StatCard label="Total for selected filters" icon={LuReceipt} loading={loading && !meta} value={money(meta?.totalAmount ?? 0)} hint={`${meta?.total ?? 0} expense(s)`} />
       </div>
@@ -132,18 +136,27 @@ export function Expenses() {
           columns={[
             { key: 'number', label: 'Expense #', render: (e) => <span className="font-mono text-xs">{e.number}</span> },
             { key: 'expenseDate', label: 'Date', render: (e) => date(`${e.expenseDate}T12:00:00Z`, tz) },
-            { key: 'category', label: 'Category' },
+            { key: 'category', label: 'Category', render: (e) => <span>{e.category}{e.recurringId ? <Badge tone="blue" className="ml-1">Recurring</Badge> : null}{e.payrollId ? <Badge tone="gold" className="ml-1">Payroll</Badge> : null}</span> },
             { key: 'paidTo', label: 'Paid to', render: (e) => <div><p>{e.paidTo || '—'}</p>{e.notes && <p className="line-clamp-1 max-w-[14rem] text-xs text-muted">{e.notes}</p>}</div> },
             { key: 'method', label: 'Method', render: (e) => <span className="uppercase">{e.method}</span> },
             { key: 'amount', label: 'Amount', className: 'text-right', render: (e) => <span className="font-semibold">{money(e.amount)}</span> },
-            { key: 'act', label: 'Actions', className: 'text-right', render: (e) => can('expenses.write') && (
+            { key: 'act', label: 'Actions', className: 'text-right', render: (e) => (
               <div className="flex justify-end gap-1">
+                <Button size="sm" variant="ghost" onClick={() => setFilesFor(e)} aria-label="Receipts" title="Receipt photos"><LuPaperclip aria-hidden />{e.attachmentCount > 0 && <span className="text-xs">{e.attachmentCount}</span>}</Button>
+                {can('expenses.write') && !e.payrollId && <>
                 <Button size="sm" variant="ghost" onClick={() => setEditing(e)} aria-label="Edit"><LuPencil aria-hidden /></Button>
                 <Button size="sm" variant="ghost" aria-label="Delete" onClick={async () => { if (window.confirm(`Delete expense ${e.number} (${money(e.amount)})?`) && (await withToast(() => api.del(`/expenses/${e.id}`), 'Expense deleted.'))) reload(); }}><LuTrash2 aria-hidden /></Button>
+                </>}
               </div>) },
           ]} />
         <Pagination meta={meta} onPage={setPage} />
       </Card>
+      {filesFor && (
+        <Modal open onClose={() => { setFilesFor(null); reload(); }} size="lg" title={`Receipts — ${filesFor.number}`}>
+          <Attachments entityType="expense" entityId={filesFor.id} canEdit={can('expenses.write')} category="receipt" title="Receipt photos / PDFs" timezone={tz} />
+        </Modal>
+      )}
+      {recurringOpen && <RecurringExpenses categories={catOptions} onClose={() => { setRecurringOpen(false); reload(); }} />}
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'New expense' : `Edit expense ${editing?.number ?? ''}`}
         footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2" noValidate>

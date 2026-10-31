@@ -6,7 +6,7 @@ import { db } from '../../db/pool.js';
 import { asyncHandler } from '../../utils/errors.js';
 import { requireTenant, requirePlatformAdmin } from '../../middleware/auth.js';
 import {
-  tenantLogin, platformLogin, setAuthCookies, clearAuthCookies, readRefreshCookie,
+  tenantLogin, platformLogin, verifyTenantLogin, verifyPlatformLogin, setAuthCookies, clearAuthCookies, readRefreshCookie,
   refreshSession, revokeByRefreshToken, requestPasswordReset, resetPassword,
 } from './auth.service.js';
 
@@ -27,8 +27,17 @@ const loginSchema = z.object({
 const meta = (req) => ({ ip: req.ip, userAgent: req.get('user-agent'), hostSlug: req.hostSlug });
 
 // ---- Hospital users ----
+const otpSchema = z.object({ challengeId: z.string().uuid(), code: z.string().trim().regex(/^\d{6}$/, 'Enter the 6-digit code.') }).strict();
+
 router.post('/login', loginLimiter, validate(loginSchema), asyncHandler(async (req, res) => {
   const result = await tenantLogin(req.body, meta(req));
+  if (result.mfaRequired) return res.json({ data: result }); // second step needed; no cookies yet
+  setAuthCookies(res, 'tenant', result);
+  return res.json({ data: { tenant: result.tenant } });
+}));
+
+router.post('/login/verify', loginLimiter, validate(otpSchema), asyncHandler(async (req, res) => {
+  const result = await verifyTenantLogin(req.body, meta(req));
   setAuthCookies(res, 'tenant', result);
   res.json({ data: { tenant: result.tenant } });
 }));
@@ -75,6 +84,13 @@ router.post('/reset-password', loginLimiter,
 // ---- Platform Super Admin (separate cookies & token type) ----
 router.post('/admin/login', loginLimiter, validate(loginSchema.omit({ workspace: true })), asyncHandler(async (req, res) => {
   const result = await platformLogin(req.body, meta(req));
+  if (result.mfaRequired) return res.json({ data: result });
+  setAuthCookies(res, 'platform', result);
+  return res.json({ data: { ok: true } });
+}));
+
+router.post('/admin/login/verify', loginLimiter, validate(otpSchema), asyncHandler(async (req, res) => {
+  const result = await verifyPlatformLogin(req.body, meta(req));
   setAuthCookies(res, 'platform', result);
   res.json({ data: { ok: true } });
 }));

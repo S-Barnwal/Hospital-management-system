@@ -8,6 +8,9 @@ import { PageHero } from './InfoPages.jsx';
 
 export { FACILITY_OPTIONS } from '../../lib/facility.js';
 import { FACILITY_OPTIONS } from '../../lib/facility.js';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import EmailInput from '../../components/EmailInput.jsx';
+import LocationFields from '../../components/LocationFields.jsx';
 
 /** Hidden honeypot field — real users never fill it; simple bots do. */
 const Honeypot = ({ bind }) => (
@@ -32,7 +35,7 @@ const clean = (obj) => Object.fromEntries(Object.entries(obj).filter(([, v]) => 
 /** Demo booking form — used on the Book a Demo page and on the home page. Saves to SQL Server. */
 export function DemoForm() {
   const [done, setDone] = useState(null);
-  const f = useForm({ orgName: '', contactName: '', email: '', phone: '', city: '', facilityType: '', expectedUsers: '', preferredAt: '', message: '', website: '' });
+  const f = useForm({ orgName: '', contactName: '', email: '', phone: '', country: 'IN', state: '', city: '', facilityType: '', expectedUsers: '', preferredAt: '', message: '', website: '' });
   const onSubmit = f.submit(async (v) => {
     const body = clean({ ...v, expectedUsers: v.expectedUsers ? Number(v.expectedUsers) : undefined, preferredAt: v.preferredAt ? new Date(v.preferredAt).toISOString() : undefined });
     const res = await api.post('/demo-requests', body);
@@ -45,9 +48,9 @@ export function DemoForm() {
         <Honeypot bind={f.bind} />
         <Input label="Hospital / organisation" required {...f.bind('orgName')} error={f.errors.orgName} className="sm:col-span-2" />
         <Input label="Contact person" required autoComplete="name" {...f.bind('contactName')} error={f.errors.contactName} />
-        <Input label="Work e-mail" type="email" required autoComplete="email" {...f.bind('email')} error={f.errors.email} />
-        <Input label="Phone" type="tel" required autoComplete="tel" {...f.bind('phone')} error={f.errors.phone} />
-        <Input label="City" {...f.bind('city')} error={f.errors.city} />
+        <EmailInput label="Work e-mail" required {...f.bind('email')} error={f.errors.email} />
+        <PhoneInput label="Phone" required defaultCountry={f.values.country || 'IN'} {...f.bind('phone')} error={f.errors.phone} />
+        <LocationFields form={f} />
         <Select label="Facility type" placeholder="Select…" options={FACILITY_OPTIONS} {...f.bind('facilityType')} error={f.errors.facilityType} />
         <Input label="Expected users" type="number" min="1" inputMode="numeric" {...f.bind('expectedUsers')} error={f.errors.expectedUsers} />
         <Input label="Preferred date & time" type="datetime-local" {...f.bind('preferredAt')} error={f.errors.preferredAt} className="sm:col-span-2" />
@@ -117,8 +120,8 @@ export function Contact() {
               <form onSubmit={onSubmit} noValidate className="grid gap-5 sm:grid-cols-2">
                 <Honeypot bind={f.bind} />
                 <Input label="Name" required {...f.bind('name')} error={f.errors.name} />
-                <Input label="E-mail" type="email" required {...f.bind('email')} error={f.errors.email} />
-                <Input label="Phone" type="tel" {...f.bind('phone')} error={f.errors.phone} />
+                <EmailInput label="E-mail" required {...f.bind('email')} error={f.errors.email} />
+                <PhoneInput label="Phone" {...f.bind('phone')} error={f.errors.phone} />
                 <Input label="Subject" {...f.bind('subject')} error={f.errors.subject} />
                 <Textarea label="Message" required {...f.bind('message')} error={f.errors.message} className="sm:col-span-2" hint="At least 10 characters." />
                 {f.formError && <Alert tone="error" className="sm:col-span-2">{f.formError}</Alert>}

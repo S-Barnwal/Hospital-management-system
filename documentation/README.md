@@ -22,6 +22,9 @@ Welcome! This folder explains **the whole project in plain language**: what it i
 | 12 | [Troubleshooting & FAQ](12-troubleshooting-faq.md) | Whoever runs the software |
 | 13 | [Glossary — simple meanings of technical words](13-glossary.md) | Everyone |
 | 14 | [For developers — code map](14-for-developers.md) | Programmers |
+| 15 | [E-mail & WhatsApp — setup and what gets sent](15-messaging-setup.md) | Whoever runs the software, owners |
+
+Also see: **phone / e-mail / address rules** and **Location on map** in [chapter 4](04-hospital-user-guide.md#phone-numbers-e-mails-and-addresses-all-screens); **Invoices** and **Hospital map** in [chapter 7](07-super-admin-guide.md).
 
 ## The project in one paragraph
 

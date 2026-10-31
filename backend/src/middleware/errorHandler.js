@@ -1,5 +1,6 @@
 import { HttpError } from '../utils/errors.js';
 import { config } from '../config/env.js';
+import { rememberError } from '../utils/metrics.js';
 
 export function notFoundHandler(req, res) {
   res.status(404).json({ error: { code: 'NOT_FOUND', message: `No route for ${req.method} ${req.path}` } });
@@ -37,10 +38,14 @@ export function errorHandler(err, req, res, _next) {
   }
   const mapped = err instanceof HttpError ? err : mapSqlError(err, req);
   if (mapped) {
-    if (mapped.status >= 500) console.error(`[${req.method} ${req.path}] ${mapped.code}: ${mapped.message}`);
+    if (mapped.status >= 500) {
+      console.error(`[${req.method} ${req.path}] ${mapped.code}: ${mapped.message}`);
+      rememberError({ method: req.method, path: req.path, code: mapped.code });
+    }
     return res.status(mapped.status).json({ error: { code: mapped.code, message: mapped.message, ...(mapped.details ? { details: mapped.details } : {}) } });
   }
   const requestId = req.id;
+  rememberError({ method: req.method, path: req.path, code: 'INTERNAL' });
   console.error(JSON.stringify({ level: 'error', requestId, method: req.method, path: req.path, message: err?.message, sqlNumber: sqlNumber(err), stack: err?.stack }));
   // In development show the real cause so problems can be fixed quickly; production stays generic.
   const message = config.isProd ? 'Something went wrong. Please try again.' : `Server error: ${err?.message || 'unknown'} (see backend terminal)`;

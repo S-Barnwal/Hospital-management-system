@@ -17,6 +17,25 @@ function hostWorkspace() {
   return '';
 }
 
+/** Second sign-in step: 6-digit code e-mailed to the user. */
+function OtpStep({ challenge, verifyPath, onDone, onBack }) {
+  const f = useForm({ code: '' });
+  const submit = f.submit(async (v) => {
+    await api.post(verifyPath, { challengeId: challenge.challengeId, code: v.code.trim() });
+    await onDone();
+  });
+  return (
+    <form onSubmit={submit} className="space-y-4" noValidate>
+      <Alert tone="info" title="Check your e-mail">We sent a 6-digit code to <strong>{challenge.sentTo}</strong>. It expires in {challenge.expiresInMinutes} minutes.</Alert>
+      <Input label="Sign-in code" inputMode="numeric" autoComplete="one-time-code" maxLength={6} required autoFocus
+        {...f.bind('code')} onChange={(e) => f.setValues({ code: e.target.value.replace(/\D/g, '').slice(0, 6) })} error={f.errors.code} />
+      {f.formError && <Alert tone="error">{f.formError}</Alert>}
+      <Button type="submit" className="w-full" size="lg" loading={f.submitting} disabled={f.values.code.length !== 6}>Verify and sign in</Button>
+      <button type="button" className="w-full text-sm text-forest-700 hover:underline" onClick={onBack}>Didn’t get it? Go back and sign in again</button>
+    </form>
+  );
+}
+
 function AuthShell({ title, subtitle, children, footer }) {
   return (
     <div className="grid min-h-[80vh] place-items-center px-4 py-12">
@@ -37,22 +56,32 @@ export function Login() {
   const navigate = useNavigate();
   const { me, refresh } = useTenantAuth();
   const fixedWorkspace = hostWorkspace();
-  const [needWorkspace, setNeedWorkspace] = useState(Boolean(fixedWorkspace));
-  const f = useForm({ email: '', password: '', workspace: fixedWorkspace });
+  const [needWorkspace, setNeedWorkspace] = useState(Boolean(fixedWorkspace) || /^[a-z0-9-]{3,63}$/.test(new URLSearchParams(window.location.search).get('workspace') || ''));
+  // ?workspace=…&email=… pre-fill (e.g. "Sign in to this branch"); never a password.
+  const q = new URLSearchParams(window.location.search);
+  const qWorkspace = /^[a-z0-9-]{3,63}$/.test(q.get('workspace') || '') ? q.get('workspace') : '';
+  const f = useForm({ email: (q.get('email') || '').slice(0, 254), password: '', workspace: fixedWorkspace || qWorkspace });
+  const [challenge, setChallenge] = useState(null);
   if (me) return <Navigate to="/app/dashboard" replace />;
+  const finish = async () => { await refresh(); navigate('/app/dashboard', { replace: true }); };
   const onSubmit = f.submit(async (v) => {
+    let r;
     try {
-      await api.post('/auth/login', { email: v.email, password: v.password, ...(v.workspace ? { workspace: v.workspace } : {}) });
+      r = await api.post('/auth/login', { email: v.email, password: v.password, ...(v.workspace ? { workspace: v.workspace } : {}) });
     } catch (e) {
       if (e.code === 'WORKSPACE_REQUIRED') setNeedWorkspace(true);
       throw e;
     }
-    await refresh();
-    navigate('/app/dashboard', { replace: true });
+    if (r.data?.mfaRequired) { setChallenge(r.data); return; }
+    await finish();
   });
   return (
     <AuthShell title="Sign in to your hospital" subtitle={fixedWorkspace ? `Workspace: ${fixedWorkspace}` : `${BRAND} for hospital staff`}
-      footer={<>New to {BRAND}? <Link to="/pricing" className="font-semibold text-forest-700">Choose a plan</Link></>}>
+      footer={<div className="space-y-2">
+        <p>New to {BRAND}? <Link to="/pricing" className="font-semibold text-forest-700">Choose a plan</Link></p>
+        <p className="text-xs">Platform admin? <Link to="/admin/login" className="font-semibold text-forest-700">Sign in to the admin portal</Link></p>
+      </div>}>
+      {challenge ? <OtpStep challenge={challenge} verifyPath="/auth/login/verify" onDone={finish} onBack={() => setChallenge(null)} /> : (
       <form onSubmit={onSubmit} className="space-y-4" noValidate>
         <Input label="E-mail" type="email" autoComplete="username" required {...f.bind('email')} error={f.errors.email} />
         <Input label="Password" type="password" autoComplete="current-password" required {...f.bind('password')} error={f.errors.password} />
@@ -66,6 +95,7 @@ export function Login() {
           <Link to="/forgot-password" className="text-forest-700 hover:underline">Forgot password?</Link>
         </div>
       </form>
+      )}
     </AuthShell>
   );
 }
@@ -118,21 +148,25 @@ export function AdminLogin() {
   const navigate = useNavigate();
   const { admin, refresh } = useAdminAuth();
   const f = useForm({ email: '', password: '' });
+  const [challenge, setChallenge] = useState(null);
   if (admin) return <Navigate to="/admin/dashboard" replace />;
+  const finish = async () => { await refresh(); navigate('/admin/dashboard', { replace: true }); };
   const onSubmit = f.submit(async (v) => {
-    await api.post('/auth/admin/login', v);
-    await refresh();
-    navigate('/admin/dashboard', { replace: true });
+    const r = await api.post('/auth/admin/login', v);
+    if (r.data?.mfaRequired) { setChallenge(r.data); return; }
+    await finish();
   });
   return (
     <div className="min-h-screen bg-forest-950">
       <AuthShell title={<span className="text-white">Platform administration</span>} subtitle={<span className="flex items-center justify-center gap-1 text-forest-200"><LuShieldCheck aria-hidden /> Super Admin access only</span>}>
+        {challenge ? <OtpStep challenge={challenge} verifyPath="/auth/admin/login/verify" onDone={finish} onBack={() => setChallenge(null)} /> : (
         <form onSubmit={onSubmit} className="space-y-4" noValidate>
           <Input label="E-mail" type="email" autoComplete="username" required {...f.bind('email')} error={f.errors.email} />
           <Input label="Password" type="password" autoComplete="current-password" required {...f.bind('password')} error={f.errors.password} />
           {f.formError && <Alert tone="error">{f.formError}</Alert>}
           <Button type="submit" className="w-full" size="lg" loading={f.submitting}>Sign in</Button>
         </form>
+        )}
       </AuthShell>
     </div>
   );

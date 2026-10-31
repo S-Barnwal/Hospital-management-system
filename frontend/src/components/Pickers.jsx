@@ -5,6 +5,7 @@ import { api, qs } from '../lib/api.js';
 import { useApi, useDebounced } from '../lib/hooks.js';
 import { fullName } from '../lib/format.js';
 import { Input, Select } from './ui.jsx';
+import { formatPhone } from '../lib/contact.js';
 
 /** Search-as-you-type patient selector. value = { id, label } | null */
 export function PatientPicker({ value, onChange, error, label = 'Patient', required = true }) {
@@ -32,7 +33,7 @@ export function PatientPicker({ value, onChange, error, label = 'Patient', requi
             <li key={p.id}>
               <button type="button" className="w-full px-3 py-2 text-left text-sm hover:bg-forest-50"
                 onClick={() => { onChange({ id: p.id, label: `${p.patientNumber} — ${fullName(p.firstName, p.lastName)}` }); setQ(''); }}>
-                <span className="font-mono text-xs text-forest-700">{p.patientNumber}</span> {fullName(p.firstName, p.lastName)} <span className="text-muted">{p.phone}</span>
+                <span className="font-mono text-xs text-forest-700">{p.patientNumber}</span> {fullName(p.firstName, p.lastName)} <span className="text-muted">{formatPhone(p.phone)}</span>
               </button>
             </li>
           ))}
@@ -49,5 +50,14 @@ export function DoctorSelect({ value, onChange, label = 'Doctor', required, plac
   return (
     <Select label={label} required={required} placeholder={loading ? 'Loading…' : placeholder} value={value ?? ''} onChange={(e) => onChange(e.target.value)}
       options={(data || []).filter((d) => d.isActive).map((d) => ({ value: String(d.id), label: `${d.fullName}${d.specialization ? ` — ${d.specialization}` : ''}` }))} />
+  );
+}
+
+/** Any active staff member (optionally of one type), e.g. the lab technician who collects a home sample. */
+export function StaffSelect({ value, onChange, label = 'Staff member', type, required, placeholder = 'Select…' }) {
+  const { data, loading } = useApi(() => api.get(`/hr/staff?pageSize=100${type ? `&type=${type}` : ''}`), [type]);
+  return (
+    <Select label={label} required={required} placeholder={loading ? 'Loading…' : placeholder} value={value ?? ''} onChange={(e) => onChange(e.target.value)}
+      options={(data || []).filter((d) => d.isActive).map((d) => ({ value: String(d.id), label: `${d.fullName}${d.designation ? ` — ${d.designation}` : d.staffType ? ` — ${d.staffType.replace('_', ' ')}` : ''}` }))} />
   );
 }

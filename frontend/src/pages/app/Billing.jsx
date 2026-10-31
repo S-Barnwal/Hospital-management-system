@@ -1,13 +1,17 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LuPlus, LuReceipt, LuArrowLeft, LuPrinter, LuLock, LuTrash2, LuIndianRupee, LuUndo2, LuBan } from 'react-icons/lu';
+import { LuPlus, LuReceipt, LuArrowLeft, LuPrinter, LuLock, LuTrash2, LuIndianRupee, LuUndo2, LuBan, LuWallet, LuLink } from 'react-icons/lu';
+import { UseDepositModal, PaymentLinkModal } from '../../components/MoneyModals.jsx';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify } from '../../lib/toast.js';
 import { date, dateTime, fullName, money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge, Textarea } from '../../components/ui.jsx';
+import QrCode from '../../components/QrCode.jsx';
 import { PatientPicker } from '../../components/Pickers.jsx';
+import Attachments from '../../components/Attachments.jsx';
+import { formatPhone } from '../../lib/contact.js';
 
 const ITEM_TYPES = ['consultation', 'lab', 'pharmacy', 'bed', 'procedure', 'other'];
 const METHODS = ['cash', 'upi', 'card', 'bank', 'other'];
@@ -95,7 +99,13 @@ export function BillDetail() {
   const [payKind, setPayKind] = useState(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [reason, setReason] = useState('');
-  useEffect(() => { if (b) setDiscount(String(Number(b.discount))); }, [b]);
+  const [gstin, setGstin] = useState('');
+  const [useDep, setUseDep] = useState(false);
+  const [linkOpen, setLinkOpen] = useState(false);
+  const patientId = b?.patient?.id;
+  const { meta: depMeta, reload: reloadDep } = useApi(() => (patientId && can('billing.read') ? api.get(`/billing/deposits?patientId=${patientId}`) : Promise.resolve({ data: [], meta: { balance: '0.00' } })), [patientId]);
+  const depBalance = Number(depMeta?.balance || 0);
+  useEffect(() => { if (b) { setDiscount(String(Number(b.discount))); setGstin(b.gst?.buyerGstin || ''); } }, [b]);
   if (error) return <Alert tone="error">{error.status === 404 ? 'Bill not found.' : error.message}</Alert>;
   if (loading && !b) return <Skeleton className="h-64 w-full" />;
   const run = async (key, fn, ok) => {
@@ -106,7 +116,7 @@ export function BillDetail() {
   const editable = draft && can('billing.write');
   const addItem = item.submit(async (v) => {
     await api.post(`/billing/bills/${id}/items`, { ...v, quantity: Number(v.quantity), unitPrice: Number(v.unitPrice), taxRatePercent: Number(v.taxRatePercent) });
-    item.setValues({ itemType: v.itemType, description: '', quantity: '1', unitPrice: '', taxRatePercent: v.taxRatePercent });
+    item.setValues({ itemType: v.itemType, description: '', quantity: '1', unitPrice: '', taxRatePercent: v.taxRatePercent, hsnSac: '' });
     reload();
   });
   return (
@@ -116,6 +126,8 @@ export function BillDetail() {
         <div className="flex flex-wrap gap-2">
           {editable && <Button loading={busy === 'final'} onClick={() => run('final', () => api.post(`/billing/bills/${id}/finalize`), 'Bill finalised. It can no longer be edited.')}><LuLock aria-hidden /> Finalise bill</Button>}
           {b.status === 'finalized' && Number(b.balance) > 0 && can('billing.write') && <Button onClick={() => setPayKind('payment')}><LuIndianRupee aria-hidden /> Record payment</Button>}
+          {b.status === 'finalized' && Number(b.balance) > 0 && depBalance > 0 && can('billing.write') && <Button variant="outline" onClick={() => setUseDep(true)}><LuWallet aria-hidden /> Pay from deposit ({money(depBalance)})</Button>}
+          {b.status === 'finalized' && Number(b.balance) > 0 && can('billing.write') && <Button variant="outline" onClick={() => setLinkOpen(true)}><LuLink aria-hidden /> Payment link</Button>}
           {b.status === 'finalized' && Number(b.paid) > 0 && can('billing.refund') && <Button variant="outline" onClick={() => setPayKind('refund')}><LuUndo2 aria-hidden /> Refund</Button>}
           {b.status !== 'cancelled' && Number(b.paid) === 0 && can('billing.write') && (draft || can('billing.refund')) && <Button variant="ghost" onClick={() => setCancelOpen(true)}><LuBan aria-hidden /> Cancel</Button>}
           {b.status !== 'draft' && <Button variant="outline" onClick={() => window.print()}><LuPrinter aria-hidden /> Print</Button>}
@@ -125,11 +137,20 @@ export function BillDetail() {
       <div className="mb-6 hidden print:block">
         <p className="font-display text-2xl font-semibold">{b.hospital.name}</p>
         <p className="text-sm">{[b.hospital.address, b.hospital.phone].filter(Boolean).join(' · ')}</p>
-        <p className="mt-3 text-lg font-semibold">{b.status === 'cancelled' ? 'CANCELLED INVOICE' : 'INVOICE'}</p><hr className="my-2" />
+        {b.gst.hospitalGstin && <p className="text-sm">GSTIN: <strong>{b.gst.hospitalGstin}</strong></p>}
+        <div className="mt-3 flex items-start justify-between">
+          <div>
+            <p className="text-lg font-semibold">{b.status === 'cancelled' ? 'CANCELLED INVOICE' : b.gst.hospitalGstin ? 'TAX INVOICE' : 'INVOICE'}</p>
+            <p className="text-sm">Bill to: {fullName(b.patient.firstName, b.patient.lastName)} ({b.patient.patientNumber}){b.patient.address ? `, ${b.patient.address}` : ''}</p>
+            {b.gst.buyerGstin && <p className="text-sm">Buyer GSTIN: {b.gst.buyerGstin}</p>}
+          </div>
+          <QrCode value={`${window.location.origin}/app/billing/${b.id}`} size={64} label="QR code to open this bill" />
+        </div>
+        <hr className="my-2" />
       </div>
 
       <PageHeader eyebrow={b.billNumber ? `${b.billNumber} · ${date(b.finalizedAt, tz)}` : `Draft bill #${b.id}`}
-        title={fullName(b.patient.firstName, b.patient.lastName)} subtitle={`${b.patient.patientNumber}${b.patient.phone ? ` · ${b.patient.phone}` : ''}`} />
+        title={fullName(b.patient.firstName, b.patient.lastName)} subtitle={`${b.patient.patientNumber}${b.patient.phone ? ` · ${formatPhone(b.patient.phone)}` : ''}`} />
       <div className="mb-4 flex items-center gap-2 print:hidden"><StatusBadge status={b.status === 'finalized' && Number(b.balance) <= 0 ? 'paid' : b.status} />
         {draft && <span className="text-xs text-muted">Draft — add items, then finalise to issue a numbered invoice.</span>}</div>
       {b.status === 'cancelled' && <Alert tone="error" className="mb-4">Cancelled: {b.cancelReason}</Alert>}
@@ -138,12 +159,13 @@ export function BillDetail() {
         <Card className="xl:col-span-2 print:col-span-3">
           <div className="relative overflow-x-auto">
             <table className="table-base">
-              <thead className="bg-forest-50/40"><tr><th>Item</th><th className="text-right">Qty</th><th className="text-right">Rate</th><th className="text-right">Tax %</th><th className="text-right">Amount</th>{editable && <th />}</tr></thead>
+              <thead className="bg-forest-50/40"><tr><th>Item</th><th>HSN/SAC</th><th className="text-right">Qty</th><th className="text-right">Rate</th><th className="text-right">Tax %</th><th className="text-right">Amount</th>{editable && <th />}</tr></thead>
               <tbody className="divide-y divide-line">
-                {b.items.length === 0 && <tr><td colSpan={6}><EmptyState icon={LuReceipt} title="No items yet" /></td></tr>}
+                {b.items.length === 0 && <tr><td colSpan={7}><EmptyState icon={LuReceipt} title="No items yet" /></td></tr>}
                 {b.items.map((i) => (
                   <tr key={i.id}>
                     <td><p className="font-medium">{i.description}</p><p className="text-xs text-muted">{titleCase(i.itemType)}</p></td>
+                    <td className="font-mono text-xs">{i.hsnSac || '—'}</td>
                     <td className="text-right">{Number(i.quantity)}</td>
                     <td className="text-right">{money(i.unitPrice)}</td>
                     <td className="text-right">{Number(i.taxRatePercent)}</td>
@@ -157,7 +179,8 @@ export function BillDetail() {
           {editable && (
             <form onSubmit={addItem} className="grid grid-cols-2 gap-2 border-t border-line p-4 sm:grid-cols-12 print:hidden" noValidate>
               <Select label="Type" className="sm:col-span-2" options={ITEM_TYPES.map((t) => ({ value: t, label: titleCase(t) }))} {...item.bind('itemType')} />
-              <Input label="Description" className="col-span-2 sm:col-span-4" required {...item.bind('description')} error={item.errors.description} />
+              <Input label="Description" className="col-span-2 sm:col-span-3" required {...item.bind('description')} error={item.errors.description} />
+              <Input label="HSN/SAC" className="sm:col-span-1" inputMode="numeric" maxLength={8} {...item.bind('hsnSac')} error={item.errors.hsnSac} />
               <Input label="Qty" type="number" min="0.01" step="0.01" className="sm:col-span-1" {...item.bind('quantity')} error={item.errors.quantity} />
               <Input label="Rate (₹)" type="number" min="0" step="0.01" className="sm:col-span-2" {...item.bind('unitPrice')} error={item.errors.unitPrice} />
               <Input label="Tax %" type="number" min="0" max="100" step="0.01" className="sm:col-span-1" {...item.bind('taxRatePercent')} />
@@ -178,10 +201,25 @@ export function BillDetail() {
                 </span>
               ) : <span>− {money(b.discount)}</span>}
             </div>
-            <div className="flex justify-between"><span className="text-muted">Tax</span><span>{money(b.tax)}</span></div>
+            {b.gst.isInterState ? (
+              <div className="flex justify-between"><span className="text-muted">IGST</span><span>{money(b.gst.igst)}</span></div>
+            ) : (<>
+              <div className="flex justify-between"><span className="text-muted">CGST</span><span>{money(b.gst.cgst)}</span></div>
+              <div className="flex justify-between"><span className="text-muted">SGST</span><span>{money(b.gst.sgst)}</span></div>
+            </>)}
             <div className="flex justify-between border-t border-line pt-2 text-base font-semibold"><span>Total</span><span>{money(b.total)}</span></div>
             <div className="flex justify-between"><span className="text-muted">Paid</span><span>{money(b.paid)}</span></div>
             <div className="flex justify-between font-semibold text-red-700"><span>Balance due</span><span>{money(b.balance)}</span></div>
+            {editable && (
+              <div className="space-y-2 border-t border-line pt-3 print:hidden">
+                <label className="flex items-center gap-2"><input type="checkbox" className="accent-forest-800" checked={b.gst.isInterState}
+                  onChange={(e) => run('gst', () => api.patch(`/billing/bills/${id}`, { isInterState: e.target.checked }), 'GST type updated.')} /> Inter-state supply (IGST instead of CGST + SGST)</label>
+                <div className="flex items-end gap-1">
+                  <Input label="Buyer GSTIN (optional, for businesses)" className="flex-1" value={gstin} onChange={(e) => setGstin(e.target.value.toUpperCase())} maxLength={15} />
+                  <Button size="sm" variant="outline" onClick={() => run('gstin', () => api.patch(`/billing/bills/${id}`, { buyerGstin: gstin.trim() || null }), 'Buyer GSTIN saved.')}>Save</Button>
+                </div>
+              </div>
+            )}
           </Card>
           <Card className="p-5">
             <h2 className="mb-2 font-display text-lg font-semibold">Receipts</h2>
@@ -196,8 +234,13 @@ export function BillDetail() {
               </ul>
             )}
           </Card>
+          <Card className="p-5 print:hidden">
+            <Attachments entityType="bill" entityId={b.id} canEdit={can('billing.write')} title="Attachments" compact timezone={tz} />
+          </Card>
         </div>
       </div>
+      {useDep && <UseDepositModal open bill={{ id: b.id, total: b.total, paid: b.paid }} balance={depBalance} onClose={() => setUseDep(false)} onDone={() => { setUseDep(false); reload(); reloadDep(); }} />}
+      {linkOpen && <PaymentLinkModal open bill={{ id: b.id, number: b.billNumber }} onClose={() => setLinkOpen(false)} />}
       {payKind && <PaymentModal bill={b} kind={payKind} onClose={() => setPayKind(null)} onDone={() => { setPayKind(null); notify.success(payKind === 'refund' ? 'Refund recorded.' : 'Payment recorded.'); reload(); }} />}
       <Modal open={cancelOpen} onClose={() => setCancelOpen(false)} title="Cancel bill" size="sm"
         footer={<><Button variant="ghost" onClick={() => setCancelOpen(false)}>Keep</Button><Button variant="danger" disabled={reason.trim().length < 3} onClick={() => { setCancelOpen(false); run('cancel', () => api.post(`/billing/bills/${id}/cancel`, { reason: reason.trim() }), 'Bill cancelled.'); }}>Cancel bill</Button></>}>

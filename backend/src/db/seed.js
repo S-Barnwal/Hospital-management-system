@@ -7,7 +7,7 @@ import { config } from '../config/env.js';
 import { db, withTransaction, closePool } from './pool.js';
 import { PERMISSIONS, ROLE_TEMPLATES } from '../modules/rbac/permissions.js';
 import { hashPassword, passwordProblem } from '../utils/password.js';
-import { provisionTenant, seedDefaultLabTests, seedDefaultExpenseCategories } from '../modules/tenants/provisioning.js';
+import { provisionTenant, seedDefaultLabTests, seedDefaultExpenseCategories, seedDefaultServiceCharges } from '../modules/tenants/provisioning.js';
 import { nextSequence, formatNumber } from '../modules/tenants/sequences.js';
 
 export async function seedPermissions() {
@@ -18,12 +18,12 @@ export async function seedPermissions() {
     { code, module, desc: description });
   }
   // Owners always hold every permission, including ones added in later releases.
-  await db.exec(`INSERT INTO hms.RolePermissions (RoleId, PermissionId)
+  await db.exec(`/* tenant-safe: system role sync for all hospitals */ INSERT INTO hms.RolePermissions (RoleId, PermissionId)
                  SELECT r.RoleId, p.PermissionId FROM hms.Roles r CROSS JOIN hms.Permissions p
                  WHERE r.Code = 'owner' AND NOT EXISTS (SELECT 1 FROM hms.RolePermissions rp WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId)`);
   // Built-in roles receive permissions added in newer releases (custom grants are never removed).
   for (const role of ROLE_TEMPLATES) {
-    await db.exec(`INSERT INTO hms.RolePermissions (RoleId, PermissionId)
+    await db.exec(`/* tenant-safe: system role sync for all hospitals */ INSERT INTO hms.RolePermissions (RoleId, PermissionId)
                    SELECT r.RoleId, p.PermissionId FROM hms.Roles r CROSS JOIN hms.Permissions p
                    WHERE r.Code = @code AND r.IsSystem = 1 AND p.Code IN (SELECT value FROM STRING_SPLIT(@codes, ','))
                      AND NOT EXISTS (SELECT 1 FROM hms.RolePermissions rp WHERE rp.RoleId = r.RoleId AND rp.PermissionId = p.PermissionId)`,
@@ -36,7 +36,7 @@ export async function seedPermissions() {
 export async function backfillTenants() {
   const tenants = await db.query('SELECT TenantId FROM hms.Tenants');
   for (const { TenantId } of tenants) {
-    await withTransaction(async (tx) => { await seedDefaultLabTests(tx, TenantId); await seedDefaultExpenseCategories(tx, TenantId); });
+    await withTransaction(async (tx) => { await seedDefaultLabTests(tx, TenantId); await seedDefaultExpenseCategories(tx, TenantId); await seedDefaultServiceCharges(tx, TenantId); });
   }
   if (tenants.length) console.log(`✓ default lab tests ensured for ${tenants.length} hospital(s)`);
 }

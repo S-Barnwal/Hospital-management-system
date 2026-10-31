@@ -1,6 +1,9 @@
 import { config } from './config/env.js';
 import { createApp } from './app.js';
-import { closePool, getPool } from './db/pool.js';
+import { closePool, getPool, db, withTransaction } from './db/pool.js';
+import { startScheduler } from './jobs/scheduler.js';
+import { loadGeo } from './utils/geo.js';
+import { backfillMissingInvoices } from './modules/invoices/invoice.service.js';
 
 if (config.problems.length) {
   console.error('Configuration problems:\n - ' + config.problems.join('\n - '));
@@ -9,6 +12,9 @@ if (config.problems.length) {
 if (config.payments.provider === 'sandbox') {
   console.warn('[payments] SANDBOX provider active — no real money is collected. Never use in production.');
 }
+
+// Country/state/city lists used by address validation (loaded in the background; validation is lenient until ready).
+loadGeo().catch((err) => console.error(`[geo] could not load country/state/city data: ${err.message}`));
 
 const app = createApp();
 const server = app.listen(config.port, () => {
@@ -25,7 +31,13 @@ getPool()
     const { migrated, permissions } = r.recordset[0];
     if (!migrated) console.error('✗ Tables not found. Run:  npm run db:migrate   then   npm run db:seed');
     else if (!permissions) console.error('✗ Permissions not seeded. Run:  npm run db:seed');
-    else console.log('✓ Database schema ready.');
+    else {
+      console.log('✓ Database schema ready.');
+      startScheduler();
+      backfillMissingInvoices({ db, withTransaction })
+        .then((r) => { if (r.created) console.log(`✓ Created ${r.created} missing invoice(s).`); if (r.skipped) console.warn(`[invoices] ${r.skipped} — run: npm run db:migrate`); })
+        .catch((err) => console.error(`[invoices] backfill failed: ${err.message}`));
+    }
   })
   .catch((err) => {
     console.error(`✗ SQL Server connection failed [${err.code || 'ERROR'}]: ${err.message}`);

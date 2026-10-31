@@ -1,0 +1,72 @@
+@import "tailwindcss";
+
+/* ── Design tokens: forest green, ivory white, antique gold ─────────────── */
+@theme {
+  --font-sans: "Manrope", ui-sans-serif, system-ui, sans-serif;
+  --font-display: "Fraunces", ui-serif, Georgia, serif;
+
+  --color-ivory: #fcfbf7;
+  --color-paper: #ffffff;
+  --color-ink: #10231c;
+  --color-muted: #5b6b64;
+  --color-line: #e3e8e4;
+
+  --color-forest-50: #eff7f2;
+  --color-forest-100: #dceee4;
+  --color-forest-200: #b7dcc8;
+  --color-forest-300: #86c2a3;
+  --color-forest-500: #1f9a72;
+  --color-forest-600: #17805f;
+  --color-forest-700: #13644b;
+  --color-forest-800: #0f4d3b;
+  --color-forest-900: #0b3b2e;
+  --color-forest-950: #06231b;
+
+  --color-gold-50: #fbf6e9;
+  --color-gold-100: #f5ebcf;
+  --color-gold-200: #ead69d;
+  --color-gold-400: #d9bc6e;
+  --color-gold-500: #c8a24a;
+  --color-gold-600: #a8842b; /* gold text on white — passes AA for large text */
+  --color-gold-700: #7f631d; /* gold text on white — passes AA for body text */
+
+  --radius-card: 1rem;
+  --shadow-soft: 0 1px 2px rgb(16 35 28 / 0.04), 0 8px 24px -12px rgb(16 35 28 / 0.12);
+  --shadow-lift: 0 2px 4px rgb(16 35 28 / 0.05), 0 20px 40px -20px rgb(16 35 28 / 0.25);
+}
+
+@layer base {
+  html { -webkit-text-size-adjust: 100%; }
+  body {
+    @apply bg-ivory font-sans text-ink antialiased;
+  }
+  h1, h2, h3 { text-wrap: balance; }
+  :focus-visible {
+    outline: 2px solid var(--color-gold-500);
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after { animation-duration: 0.01ms !important; transition-duration: 0.01ms !important; }
+  }
+}
+
+@layer components {
+  .container-page { @apply mx-auto w-full max-w-7xl px-4 sm:px-6 lg:px-8; }
+  .eyebrow { @apply text-xs font-semibold uppercase tracking-[0.18em] text-gold-700; }
+  .gold-rule { @apply h-px w-12 bg-gold-500; }
+  .card { @apply rounded-[var(--radius-card)] border border-line bg-paper shadow-[var(--shadow-soft)]; }
+  .input {
+    @apply block w-full rounded-lg border border-line bg-white px-3 py-2.5 text-sm text-ink placeholder:text-muted/70
+      transition focus:border-forest-500 focus:outline-none focus:ring-4 focus:ring-forest-100 disabled:bg-forest-50/50;
+  }
+  .input[aria-invalid="true"] { @apply border-red-400 focus:ring-red-100; }
+  .label { @apply mb-1.5 block text-sm font-medium text-ink; }
+  .table-base { @apply min-w-full divide-y divide-line text-sm; }
+  .table-base th { @apply whitespace-nowrap px-4 py-3 text-left text-xs font-semibold uppercase tracking-wide text-muted; }
+  .table-base td { @apply px-4 py-3 align-middle; }
+  .grain {
+    background-image: radial-gradient(rgb(200 162 74 / 0.08) 1px, transparent 1px);
+    background-size: 18px 18px;
+  }
+}

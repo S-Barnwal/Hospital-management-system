@@ -1,3 +1,4 @@
+import { parseKey } from '../utils/secretBox.js';
 // Centralised, validated environment configuration.
 // Values come from process.env (loaded from backend/.env by `node --env-file`).
 
@@ -71,7 +72,7 @@ function buildDbConfig(env) {
   return {
     ...base,
     pool: { max: int(env.DB_POOL_MAX, 10), min: 0, idleTimeoutMillis: 30000 },
-    connectionTimeout: 15000,
+    connectionTimeout: int(env.DB_CONNECT_TIMEOUT_MS, 30000),
     requestTimeout: 30000,
     options: { ...base.options, enableArithAbort: true, useUTC: true },
   };
@@ -105,6 +106,26 @@ export function loadConfig(env = process.env) {
       sandboxSecret: env.SANDBOX_PAYMENT_SECRET || 'local-sandbox-only-secret',
     },
     subscriptionGraceDays: int(env.SUBSCRIPTION_GRACE_DAYS, 7),
+    // Outgoing messages. "log" = do not send; print to the server log and the Message log (development).
+    email: {
+      provider: (env.EMAIL_PROVIDER || 'log').toLowerCase(), // log | smtp
+      from: env.EMAIL_FROM || 'MediCore HMS <no-reply@localhost>',
+      smtp: {
+        host: env.SMTP_HOST || '', port: int(env.SMTP_PORT, 587), secure: bool(env.SMTP_SECURE, false),
+        user: env.SMTP_USER || '', pass: env.SMTP_PASS || '',
+      },
+    },
+    whatsapp: {
+      provider: (env.WHATSAPP_PROVIDER || 'log').toLowerCase(), // log | meta
+      token: env.WHATSAPP_TOKEN || '',
+      phoneNumberId: env.WHATSAPP_PHONE_NUMBER_ID || '',
+      language: env.WHATSAPP_TEMPLATE_LANGUAGE || 'en',
+      defaultCountryCode: env.DEFAULT_COUNTRY_CODE || '91',
+    },
+    jobs: { enabled: bool(env.JOBS_ENABLED, true), intervalSec: int(env.JOBS_INTERVAL_SEC, 300) },
+    superAdminMfa: bool(env.SUPERADMIN_MFA, false),
+    // 32 random bytes (base64). Needed only if hospitals connect their OWN e-mail/WhatsApp (Enterprise).
+    messagingKey: parseKey(env.MESSAGING_ENCRYPTION_KEY),
     superAdmin: {
       email: env.SUPERADMIN_EMAIL || '',
       password: env.SUPERADMIN_PASSWORD || '',
@@ -118,6 +139,12 @@ export function loadConfig(env = process.env) {
   if (cfg.payments.provider === 'razorpay' && (!cfg.payments.razorpay.keyId || !cfg.payments.razorpay.keySecret)) {
     problems.push('RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET are required when PAYMENT_PROVIDER=razorpay.');
   }
+  if (cfg.email.provider === 'smtp' && !cfg.email.smtp.host) problems.push('SMTP_HOST is required when EMAIL_PROVIDER=smtp.');
+  if (cfg.whatsapp.provider === 'meta' && (!cfg.whatsapp.token || !cfg.whatsapp.phoneNumberId)) {
+    problems.push('WHATSAPP_TOKEN and WHATSAPP_PHONE_NUMBER_ID are required when WHATSAPP_PROVIDER=meta.');
+  }
+  if (cfg.superAdminMfa && cfg.email.provider === 'log' && isProd) problems.push('SUPERADMIN_MFA needs a real EMAIL_PROVIDER in production.');
+  if (env.MESSAGING_ENCRYPTION_KEY && !cfg.messagingKey) problems.push('MESSAGING_ENCRYPTION_KEY must be 32 random bytes in base64 (44 characters).');
   cfg.problems = problems;
   return cfg;
 }

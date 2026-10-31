@@ -78,8 +78,31 @@ function bindParams(request, params = {}) {
   return request;
 }
 
+/**
+ * The SQL driver returns BIGINT columns as strings (to avoid precision loss). All our BIGINT ids are far below
+ * 2^53, so convert them to numbers: the API then returns ids consistently as numbers and `===` comparisons work.
+ */
+export function bigintColumnsToNumbers(recordset) {
+  if (!recordset?.columns) return recordset;
+  const names = Object.values(recordset.columns).filter((c) => c.type === sql.BigInt).map((c) => c.name);
+  if (!names.length) return recordset;
+  for (const row of recordset) {
+    for (const name of names) {
+      if (typeof row[name] === 'string') {
+        const n = Number(row[name]);
+        if (Number.isSafeInteger(n)) row[name] = n;
+      }
+    }
+  }
+  return recordset;
+}
+
 function makeRunner(requestFactory) {
-  const run = async (text, params) => bindParams(requestFactory(), params).query(text);
+  const run = async (text, params) => {
+    const result = await bindParams(requestFactory(), params).query(text);
+    (result.recordsets || []).forEach(bigintColumnsToNumbers);
+    return result;
+  };
   return {
     /** Returns all rows of the first recordset. */
     query: async (text, params) => (await run(text, params)).recordset ?? [],

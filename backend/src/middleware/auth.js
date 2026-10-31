@@ -30,6 +30,7 @@ SELECT u.UserId, u.Status AS UserStatus, u.IsOwner,
                            AND s.TenantId = t.TenantId AND s.RevokedAt IS NULL AND s.ExpiresAt > SYSUTCDATETIME())
             THEN 1 ELSE 0 END AS SessionValid,
        sub.Status AS SubStatus, sub.CurrentPeriodEnd AS SubPeriodEnd, sub.GraceDays AS SubGraceDays,
+       CASE WHEN sub.IsFree = 1 AND EXISTS (SELECT 1 FROM hms.Plans fp WHERE fp.PlanId = sub.PlanId AND fp.IsFree = 1) THEN 1 ELSE 0 END AS SubFreeNow,
        (SELECT STRING_AGG(r.Code, ',') FROM hms.UserRoles ur JOIN hms.Roles r ON r.RoleId = ur.RoleId AND r.TenantId = ur.TenantId
          WHERE ur.TenantId = t.TenantId AND ur.UserId = u.UserId) AS Roles,
        (SELECT STRING_AGG(x.Code, ',') FROM (
@@ -41,7 +42,7 @@ SELECT u.UserId, u.Status AS UserStatus, u.IsOwner,
          WHERE pf.PlanId = sub.PlanId AND pf.IsIncluded = 1) AS Features
 FROM hms.Users u
 JOIN hms.Tenants t ON t.TenantId = u.TenantId
-OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays, s.PlanId FROM hms.Subscriptions s
+OUTER APPLY (SELECT TOP 1 s.Status, s.CurrentPeriodEnd, s.GraceDays, s.PlanId, s.IsFree FROM hms.Subscriptions s
              WHERE s.TenantId = t.TenantId ORDER BY s.CurrentPeriodEnd DESC) sub
 WHERE u.UserId = @uid AND u.TenantId = @tid;`;
 
@@ -65,12 +66,22 @@ export const requirePermission = (...codes) => (req, _res, next) => {
   return next();
 };
 
+/** requireTenant, unless a parent router on the same path already authenticated this request (avoids a second DB round-trip). */
+export const ensureTenant = (req, res, next) => (req.ctx?.tenantId ? next() : requireTenant(req, res, next));
+
+/** Passes when the user has AT LEAST ONE of the codes (e.g. "own cash closings" or "everyone's"). */
+export const requireAnyPermission = (...codes) => (req, _res, next) => {
+  if (!req.ctx) return next(unauthorized());
+  if (!codes.some((c) => req.ctx.permissions.has(c))) return next(forbidden());
+  return next();
+};
+
 /** Authenticates a platform Super Admin (separate cookie, separate table, separate token type). */
 export async function requirePlatformAdmin(req, _res, next) {
   try {
     const payload = verifyJwt(req.cookies?.[COOKIES.adminAccess], config.jwtSecret);
     if (!payload || payload.typ !== 'platform') throw unauthorized();
-    const row = await db.one(`
+    const row = await db.one(`/* tenant-safe: platform admin session */ 
       SELECT pu.PlatformUserId, pu.Email, pu.FullName, pu.Role, pu.Status
       FROM hms.PlatformUsers pu
       WHERE pu.PlatformUserId = @id AND pu.Status = 'active'

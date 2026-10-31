@@ -14,7 +14,9 @@ router.use(requireTenant);
 /** Tables never exported (secrets, platform-internal data). */
 export const EXCLUDED_TABLES = new Set(['UserSessions', 'PasswordResetTokens', 'OnboardingRequests', 'PaymentEvents', 'SchemaMigrations']);
 /** Columns never exported, whatever table they are in. */
-export const isSecretColumn = (name) => /hash|token|secret|signature|payload/i.test(name);
+/** Rows a hospital must not receive even though they carry its TenantId (support-team internal notes). */
+export const ROW_FILTERS = { SupportTicketMessages: 'AND IsInternal = 0' };
+export const isSecretColumn = (name) => /hash|token|secret|signature|payload|password|passenc|enc$/i.test(name);
 const SAFE_IDENT = /^[A-Za-z0-9_]+$/;
 
 router.get('/', requirePermission('backups.manage'), asyncHandler(async (req, res) => {
@@ -41,7 +43,7 @@ router.get('/export', requirePermission('backups.manage'), exportLimiter, asyncH
     ORDER BY c.TABLE_NAME, c.ORDINAL_POSITION`);
   const tables = new Map();
   for (const { tableName, columnName } of columns) {
-    if (EXCLUDED_TABLES.has(tableName) || !SAFE_IDENT.test(tableName) || !SAFE_IDENT.test(columnName) || isSecretColumn(columnName)) continue;
+    if (EXCLUDED_TABLES.has(tableName) || !SAFE_IDENT.test(tableName) || !SAFE_IDENT.test(columnName) || isSecretColumn(columnName) || (tableName === 'Attachments' && columnName === 'Content')) continue; // files are not in the JSON backup
     if (!tables.has(tableName)) tables.set(tableName, []);
     tables.get(tableName).push(columnName);
   }
@@ -58,7 +60,7 @@ router.get('/export', requirePermission('backups.manage'), exportLimiter, asyncH
       + `"exportedAt":${JSON.stringify(new Date().toISOString())},"tables":{`);
     let first = true;
     for (const [table, cols] of tables) {
-      const rows = await db.query(`SELECT ${cols.map((c) => `[${c}]`).join(', ')} FROM hms.[${table}] WHERE TenantId = @tid`, { tid });
+      const rows = await db.query(`SELECT ${cols.map((c) => `[${c}]`).join(', ')} FROM hms.[${table}] WHERE TenantId = @tid ${ROW_FILTERS[table] ?? ''}`, { tid });
       write(`${first ? '' : ','}${JSON.stringify(table)}:${JSON.stringify(rows)}`);
       first = false; totalRows += rows.length; tableCount += 1;
     }

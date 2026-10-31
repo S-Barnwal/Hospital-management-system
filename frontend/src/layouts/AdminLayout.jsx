@@ -1,19 +1,34 @@
 import { useEffect, useState } from 'react';
 import { NavLink, Outlet, Navigate, useLocation, useNavigate } from 'react-router-dom';
-import { LuLayoutDashboard, LuBuilding2, LuLayers, LuCreditCard, LuCalendarCheck, LuHistory, LuSettings, LuLogOut, LuMenu, LuMessageSquare, LuRepeat } from 'react-icons/lu';
+import {
+  LuLayoutDashboard, LuBuilding2, LuLayers, LuCreditCard, LuCalendarCheck, LuHistory, LuSettings, LuLogOut, LuMenu, LuMessageSquare, LuRepeat, LuFileText, LuMap,
+  LuTrendingUp, LuActivity, LuTicketPercent, LuLifeBuoy, LuNetwork, LuKeyRound,
+} from 'react-icons/lu';
 import { useAdminAuth } from '../context/AuthContext.jsx';
 import { LogoMark } from '../components/Logo.jsx';
 import { Spinner, cx } from '../components/ui.jsx';
 import Toasts from '../components/Toasts.jsx';
 
 const NAV = [
+  ['Business'],
   ['/admin/dashboard', 'Overview', LuLayoutDashboard],
+  ['/admin/revenue', 'Revenue (MRR)', LuTrendingUp],
   ['/admin/tenants', 'Hospitals (tenants)', LuBuilding2],
+  ['/admin/groups', 'Hospital groups', LuNetwork],
+  ['/admin/hospital-map', 'Hospital map', LuMap],
+  ['Billing'],
   ['/admin/plans', 'Plans', LuLayers],
+  ['/admin/coupons', 'Coupons', LuTicketPercent],
   ['/admin/subscriptions', 'Subscriptions', LuRepeat],
   ['/admin/payments', 'Payments', LuCreditCard],
+  ['/admin/invoices', 'Invoices', LuFileText],
+  ['Customers'],
+  ['/admin/support', 'Support tickets', LuLifeBuoy],
   ['/admin/demo-requests', 'Demo requests', LuCalendarCheck],
   ['/admin/messages', 'Contact messages', LuMessageSquare],
+  ['System'],
+  ['/admin/monitoring', 'Monitoring', LuActivity],
+  ['/admin/login-history', 'Sign-in history', LuKeyRound],
   ['/admin/audit-logs', 'Audit logs', LuHistory],
   ['/admin/settings', 'Website settings', LuSettings],
 ];
@@ -33,13 +48,13 @@ export default function AdminLayout() {
         <LogoMark className="h-8 w-8" />
         <div><p className="text-sm font-semibold text-white">Platform Admin</p><p className="text-[11px] uppercase tracking-widest text-gold-400">{admin.role.replace('_', ' ')}</p></div>
       </div>
-      <nav className="flex-1 space-y-0.5 px-3 py-4" aria-label="Admin">
-        {NAV.map(([to, label, Icon]) => (
+      <nav className="flex-1 space-y-0.5 overflow-y-auto px-3 py-4" aria-label="Admin">
+        {NAV.map(([to, label, Icon]) => (!label ? <p key={to} className="px-3 pb-1 pt-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-gold-400/70 first:pt-0">{to}</p> : (
           <NavLink key={to} to={to} className={({ isActive }) => cx('flex items-center gap-3 rounded-lg px-3 py-2 text-sm font-medium',
             isActive ? 'bg-gold-500/15 text-gold-200' : 'text-forest-100/75 hover:bg-white/5 hover:text-white')}>
             <Icon className="h-4 w-4" aria-hidden />{label}
           </NavLink>
-        ))}
+        )))}
       </nav>
       <div className="border-t border-white/10 p-3">
         <p className="truncate px-3 pb-2 text-xs text-forest-300">{admin.email}</p>
@@ -49,16 +64,16 @@ export default function AdminLayout() {
   );
 
   return (
-    <div className="min-h-screen bg-[#f6f7f3]">
-      <aside className="fixed inset-y-0 left-0 hidden w-64 lg:block">{side}</aside>
+    <div className="min-h-screen bg-[#f6f7f3] print:bg-white">
+      <aside className="fixed inset-y-0 left-0 hidden w-64 lg:block print:hidden">{side}</aside>
       {open && <div className="fixed inset-0 z-40 lg:hidden"><div className="absolute inset-0 bg-black/40" onClick={() => setOpen(false)} /><aside className="absolute inset-y-0 left-0 w-72">{side}</aside></div>}
-      <div className="lg:pl-64">
-        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-white/90 px-4 backdrop-blur lg:hidden">
+      <div className="min-w-0 lg:pl-64 print:pl-0">
+        <header className="sticky top-0 z-20 flex h-14 items-center gap-3 border-b border-line bg-white/90 px-4 backdrop-blur lg:hidden print:hidden">
           <button onClick={() => setOpen(true)} className="p-2" aria-label="Open menu"><LuMenu className="h-5 w-5" /></button>
           <p className="font-semibold">Platform Admin</p>
         </header>
         <Toasts />
-        <main className="px-4 py-6 sm:px-6 lg:px-8"><Outlet /></main>
+        <main className="min-w-0 overflow-x-clip px-4 py-6 sm:px-6 lg:px-8 print:p-0"><Outlet /></main>
       </div>
     </div>
   );

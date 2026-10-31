@@ -7,6 +7,7 @@ import { db } from '../../db/pool.js';
 import { audit } from '../../utils/audit.js';
 import { quote } from '../../utils/pricing.js';
 import { FACILITY_TYPES } from '../../utils/constants.js';
+import { phoneSchema, optionalPhone, emailSchema, withLocation } from '../../utils/contact.js';
 
 const router = Router();
 const formLimiter = rateLimit({
@@ -25,6 +26,9 @@ export function serialisePlan(p, features) {
     taxRatePercent: Number(p.TaxRatePercent),
     contactSales: Boolean(p.IsContactSales),
     popular: Boolean(p.IsPopular),
+    // "Free for now": sign-up and renewal need no payment; the normal price is still shown (struck through).
+    isFree: Boolean(p.IsFree) && priced,
+    trialDays: priced && !p.IsFree ? Number(p.TrialDays || 0) : 0,
     monthly: priced ? quote(p, 'monthly') : null,
     annual: priced ? quote(p, 'annual') : null,
     limits: { staffUsers: p.MaxStaffUsers, branches: p.MaxBranches, patients: p.MaxPatients },
@@ -46,30 +50,28 @@ router.get('/site-settings', asyncHandler(async (_req, res) => {
   res.json({ data: Object.fromEntries(rows.map((r) => [r.SettingKey, r.SettingValue])) });
 }));
 
-const phone = z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, 'Enter a valid phone number');
 const honeypot = z.string().max(0, 'Spam detected').optional(); // hidden "website" field must stay empty
 
-const demoSchema = z.object({
+const demoSchema = withLocation(z.object({
   orgName: z.string().trim().min(2).max(200),
   contactName: z.string().trim().min(2).max(150),
-  email: z.string().trim().toLowerCase().email().max(254),
-  phone,
-  city: z.string().trim().max(100).optional(),
+  email: emailSchema,
+  phone: phoneSchema,
   facilityType: z.enum(FACILITY_TYPES).optional(),
   expectedUsers: z.coerce.number().int().min(1).max(100000).optional(),
   preferredAt: z.string().datetime({ offset: true }).optional()
     .refine((v) => !v || new Date(v) > new Date(), 'Preferred time must be in the future'),
   message: z.string().trim().max(2000).optional(),
   website: honeypot,
-}).strict();
+}).strict());
 
 router.post('/demo-requests', formLimiter, validate(demoSchema), asyncHandler(async (req, res) => {
   const b = req.body;
   const row = await db.one(
-    `INSERT INTO hms.DemoRequests (OrgName, ContactName, Email, Phone, City, FacilityType, ExpectedUsers, PreferredAt, Message, SourceIp)
+    `INSERT INTO hms.DemoRequests (OrgName, ContactName, Email, Phone, City, State, Country, FacilityType, ExpectedUsers, PreferredAt, Message, SourceIp)
      OUTPUT INSERTED.DemoRequestId
-     VALUES (@org, @name, @email, @phone, @city, @ftype, @users, @pref, @msg, @ip)`,
-    { org: b.orgName, name: b.contactName, email: b.email, phone: b.phone, city: b.city ?? null, ftype: b.facilityType ?? null,
+     VALUES (@org, @name, @email, @phone, @city, @state, @country, @ftype, @users, @pref, @msg, @ip)`,
+    { org: b.orgName, name: b.contactName, email: b.email, phone: b.phone, city: b.city ?? null, state: b.state ?? null, country: b.country ?? null, ftype: b.facilityType ?? null,
       users: b.expectedUsers ?? null, pref: b.preferredAt ? new Date(b.preferredAt) : null, msg: b.message ?? null, ip: req.ip });
   await audit({ actorType: 'public', action: 'demo_request.created', entityType: 'demo_request', entityId: row.DemoRequestId, ip: req.ip });
   res.status(201).json({ data: { id: row.DemoRequestId, message: 'Thank you! Our team will contact you within one business day.' } });
@@ -77,8 +79,8 @@ router.post('/demo-requests', formLimiter, validate(demoSchema), asyncHandler(as
 
 const contactSchema = z.object({
   name: z.string().trim().min(2).max(150),
-  email: z.string().trim().toLowerCase().email().max(254),
-  phone: phone.optional().or(z.literal('').transform(() => undefined)),
+  email: emailSchema,
+  phone: optionalPhone,
   subject: z.string().trim().max(200).optional(),
   message: z.string().trim().min(10).max(4000),
   website: honeypot,

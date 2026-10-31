@@ -11,23 +11,26 @@ export const fromMinor = (minor) => `${Math.trunc(minor / 100)}.${String(Math.ab
 
 /**
  * Computes the payable amount for a plan + interval. Tax is GST-exclusive pricing:
- * tax = round(subtotal * rate / 100) to the nearest paisa.
+ * tax = round((subtotal − discount) × rate / 100) to the nearest paisa. `discountFor(subtotalMinor)` (optional) returns
+ * a coupon discount in paise.
  */
-export function quote(plan, interval) {
+export function quote(plan, interval, discountFor = null) {
   if (plan.IsContactSales) throw new Error('Plan requires contact with sales.');
   const price = interval === 'annual' ? plan.AnnualPrice : plan.MonthlyPrice;
   if (price === null || price === undefined) throw new Error('Plan price not configured.');
   const subtotal = toMinor(Number(price).toFixed(2));
+  const discount = discountFor ? Math.max(0, Math.min(subtotal, discountFor(subtotal))) : 0;
   const ratePct = Number(plan.TaxRatePercent ?? 0);
   // rate stored with 2 decimals → work in basis points (1% = 100 bp) to stay in integers
   const rateBp = Math.round(ratePct * 100);
-  const tax = Math.round((subtotal * rateBp) / 10000);
+  const tax = Math.round(((subtotal - discount) * rateBp) / 10000);
   return {
     currency: plan.Currency || 'INR',
     subtotal: fromMinor(subtotal),
+    discount: fromMinor(discount),
     tax: fromMinor(tax),
-    total: fromMinor(subtotal + tax),
-    totalMinor: subtotal + tax,
+    total: fromMinor(subtotal - discount + tax),
+    totalMinor: subtotal - discount + tax,
     taxRatePercent: ratePct,
   };
 }

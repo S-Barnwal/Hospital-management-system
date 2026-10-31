@@ -1,22 +1,40 @@
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LuPlus, LuSearch, LuUsers, LuArrowLeft, LuArchive, LuPencil, LuCalendarClock } from 'react-icons/lu';
-import { api, qs } from '../../lib/api.js';
+import { LuPlus, LuSearch, LuUsers, LuArrowLeft, LuArchive, LuPencil, LuCalendarClock, LuIdCard } from 'react-icons/lu';
+import { api, qs, fileUrl } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { age, date, dateTime, fullName, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge } from '../../components/ui.jsx';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import EmailInput from '../../components/EmailInput.jsx';
+import LocationFields from '../../components/LocationFields.jsx';
+import { formatPhone, countryName } from '../../lib/contact.js';
+import { LabTrends } from './LabExtras.jsx';
+import Attachments from '../../components/Attachments.jsx';
 
 const GENDERS = [{ value: 'female', label: 'Female' }, { value: 'male', label: 'Male' }, { value: 'other', label: 'Other' }, { value: 'unknown', label: 'Prefer not to say' }];
 const BLOOD = ['A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'].map((b) => ({ value: b, label: b }));
-const EMPTY = { firstName: '', lastName: '', gender: '', dateOfBirth: '', phone: '', email: '', addressLine: '', city: '', bloodGroup: '', emergencyContactName: '', emergencyContactPhone: '' };
+const EMPTY = { firstName: '', lastName: '', gender: '', dateOfBirth: '', phone: '', email: '', addressLine: '', country: '', state: '', city: '', bloodGroup: '', emergencyContactName: '', emergencyContactPhone: '', abhaNumber: '', abhaAddress: '' };
 
 /** Register or edit a patient. Checks for likely duplicates within this hospital before creating. */
 export function PatientForm({ open, onClose, onSaved, patient }) {
-  const f = useForm(patient ? { ...EMPTY, ...Object.fromEntries(Object.entries(patient).map(([k, v]) => [k, v ?? ''])) } : EMPTY);
+  const { me } = useTenantAuth();
+  const homeCountry = me?.tenant?.country || 'IN';
+  const f = useForm(patient ? { ...EMPTY, ...Object.fromEntries(Object.entries(patient).filter(([k]) => k in EMPTY).map(([k, v]) => [k, v ?? ''])), abhaNumber: patient.abhaNumberFormatted ?? '' } : EMPTY);
   const [dupes, setDupes] = useState(null);
-  useEffect(() => { if (open && !patient) { f.setValues(EMPTY); setDupes(null); } /* eslint-disable-next-line */ }, [open]);
+  const [phoneMatches, setPhoneMatches] = useState([]);
+  const phone = useDebounced(f.values.phone, 500);
+  useEffect(() => { if (open && !patient) { f.setValues({ ...EMPTY, country: homeCountry }); setDupes(null); setPhoneMatches([]); } /* eslint-disable-next-line */ }, [open]);
+  // Live warning while typing: is this mobile number already registered?
+  useEffect(() => {
+    const digits = String(phone || '').replace(/\D/g, '');
+    if (patient || digits.length < 10) { setPhoneMatches([]); return undefined; }
+    let live = true;
+    api.post('/patients/check-duplicates', { phone }).then((r) => live && setPhoneMatches(r.data)).catch(() => live && setPhoneMatches([]));
+    return () => { live = false; };
+  }, [phone, patient]);
 
   const payload = (v) => Object.fromEntries(Object.keys(EMPTY).map((k) => [k, v[k] === '' ? null : v[k]]));
   const save = f.submit(async (v) => {
@@ -42,7 +60,7 @@ export function PatientForm({ open, onClose, onSaved, patient }) {
         <Alert tone="warning" title="Possible duplicate" className="mb-5">
           <p>{dupes.length} existing patient(s) match this phone number or name and date of birth:</p>
           <ul className="mt-2 list-disc pl-5">
-            {dupes.map((d) => <li key={d.id}><Link className="font-semibold underline" to={`/app/patients/${d.id}`} onClick={onClose}>{d.patientNumber}</Link> — {fullName(d.firstName, d.lastName)}{d.phone ? `, ${d.phone}` : ''}</li>)}
+            {dupes.map((d) => <li key={d.id}><Link className="font-semibold underline" to={`/app/patients/${d.id}`} onClick={onClose}>{d.patientNumber}</Link> — {fullName(d.firstName, d.lastName)}{d.phone ? `, ${formatPhone(d.phone)}` : ''}</li>)}
           </ul>
           <p className="mt-2">Open the existing record, or choose “Register anyway” if this is a different person.</p>
         </Alert>
@@ -52,13 +70,23 @@ export function PatientForm({ open, onClose, onSaved, patient }) {
         <Input label="Last name" {...f.bind('lastName')} error={f.errors.lastName} />
         <Select label="Gender" placeholder="—" options={GENDERS} {...f.bind('gender')} error={f.errors.gender} />
         <Input label="Date of birth" type="date" max={new Date().toISOString().slice(0, 10)} {...f.bind('dateOfBirth')} error={f.errors.dateOfBirth} />
-        <Input label="Phone" type="tel" {...f.bind('phone')} error={f.errors.phone} />
-        <Input label="E-mail" type="email" {...f.bind('email')} error={f.errors.email} />
-        <Input label="Address" {...f.bind('addressLine')} error={f.errors.addressLine} className="sm:col-span-2" />
-        <Input label="City" {...f.bind('city')} error={f.errors.city} />
+        <div>
+          <PhoneInput label="Phone" defaultCountry={homeCountry} {...f.bind('phone')} error={f.errors.phone} />
+          {phoneMatches.length > 0 && !dupes && (
+            <p className="mt-1 rounded-md bg-gold-50 px-2 py-1 text-xs text-gold-700" role="status">
+              Already registered: {phoneMatches.map((d, i) => <span key={d.id}>{i > 0 && ', '}<Link className="font-semibold underline" to={`/app/patients/${d.id}`} onClick={onClose}>{d.patientNumber} {fullName(d.firstName, d.lastName)}</Link></span>)}
+            </p>
+          )}
+        </div>
+        <EmailInput label="E-mail" {...f.bind('email')} error={f.errors.email} />
+        <Input label="Address (house, street, area)" {...f.bind('addressLine')} error={f.errors.addressLine} className="sm:col-span-2" />
+        <LocationFields form={f} defaultCountry={homeCountry} />
         <Select label="Blood group" placeholder="—" options={BLOOD} {...f.bind('bloodGroup')} error={f.errors.bloodGroup} />
         <Input label="Emergency contact name" {...f.bind('emergencyContactName')} error={f.errors.emergencyContactName} />
-        <Input label="Emergency contact phone" type="tel" {...f.bind('emergencyContactPhone')} error={f.errors.emergencyContactPhone} />
+        <PhoneInput label="Emergency contact phone" defaultCountry={homeCountry} {...f.bind('emergencyContactPhone')} error={f.errors.emergencyContactPhone} />
+        <Input label="ABHA number" inputMode="numeric" maxLength={17} placeholder="91-1234-5678-9012" {...f.bind('abhaNumber')} error={f.errors.abhaNumber}
+          hint="Ayushman Bharat Health Account (14 digits). Optional." />
+        <Input label="ABHA address" placeholder="name@abdm" {...f.bind('abhaAddress')} error={f.errors.abhaAddress} />
         {f.formError && <Alert tone="error" className="sm:col-span-2">{f.formError}</Alert>}
         <button type="submit" hidden />
       </form>
@@ -103,7 +131,7 @@ export default function Patients() {
             { key: 'patientNumber', label: 'Patient no.', render: (r) => <span className="font-mono text-xs font-semibold text-forest-800">{r.patientNumber}</span> },
             { key: 'name', label: 'Name', render: (r) => <span className="font-medium text-ink">{fullName(r.firstName, r.lastName)}</span> },
             { key: 'age', label: 'Age / gender', render: (r) => [age(r.dateOfBirth) ?? null, r.gender && titleCase(r.gender)].filter((x) => x !== null && x !== undefined).join(' · ') || '—' },
-            { key: 'phone', label: 'Phone' },
+            { key: 'phone', label: 'Phone', render: (p) => formatPhone(p.phone) },
             { key: 'createdAt', label: 'Registered', render: (r) => date(r.createdAt) },
           ]} />
         <Pagination meta={meta} onPage={setPage} />
@@ -116,7 +144,7 @@ export default function Patients() {
 
 export function PatientDetail() {
   const { id } = useParams();
-  const { me, can } = useTenantAuth();
+  const { me, can, hasFeature } = useTenantAuth();
   const navigate = useNavigate();
   const [editing, setEditing] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -133,9 +161,12 @@ export function PatientDetail() {
 
   const rows = [
     ['Gender', p.gender && titleCase(p.gender)], ['Date of birth', p.dateOfBirth ? `${date(p.dateOfBirth)} (${age(p.dateOfBirth)} yrs)` : null],
-    ['Phone', p.phone], ['E-mail', p.email], ['Blood group', p.bloodGroup], ['Address', [p.addressLine, p.city].filter(Boolean).join(', ')],
-    ['Emergency contact', [p.emergencyContactName, p.emergencyContactPhone].filter(Boolean).join(' · ')], ['Registered', dateTime(p.createdAt, tz)],
+    ['Phone', formatPhone(p.phone)], ['E-mail', p.email], ['Blood group', p.bloodGroup],
+    ['Address', [p.addressLine, p.city, p.state, p.country && countryName(p.country)].filter(Boolean).join(', ')],
+    ['Emergency contact', [p.emergencyContactName, formatPhone(p.emergencyContactPhone)].filter(Boolean).join(' · ')],
+    ['ABHA', [p.abhaNumberFormatted, p.abhaAddress].filter(Boolean).join(' · ')], ['Registered', dateTime(p.createdAt, tz)],
   ];
+  const makePhoto = async (a) => { if (await withToast(() => api.put(`/patients/${p.id}/photo`, { attachmentId: a.id }), 'Profile photo updated.')) reload(); };
 
   return (
     <>
@@ -144,13 +175,20 @@ export function PatientDetail() {
         subtitle={p.isArchived ? 'This record is archived.' : undefined}
         actions={<>
           {can('appointments.write') && !p.isArchived && <Button to={`/app/appointments?new=1&patientId=${p.id}`}><LuCalendarClock aria-hidden /> Book appointment</Button>}
+          <Button variant="outline" to={`/app/patients/${p.id}/card`}><LuIdCard aria-hidden /> Patient card</Button>
           {can('patients.write') && <Button variant="outline" onClick={() => setEditing(true)}><LuPencil aria-hidden /> Edit</Button>}
           {can('patients.archive') && <Button variant="ghost" loading={busy} onClick={toggleArchive}><LuArchive aria-hidden /> {p.isArchived ? 'Restore' : 'Archive'}</Button>}
         </>} />
       {p.isArchived && <Badge tone="gray" className="mb-4">Archived</Badge>}
       <div className="grid gap-6 lg:grid-cols-3">
         <Card className="p-5">
-          <h2 className="font-display text-lg font-semibold text-forest-950">Details</h2>
+          <div className="flex items-center gap-4">
+            {p.photoAttachmentId
+              ? <img src={fileUrl(p.photoAttachmentId)} alt={`Photo of ${fullName(p.firstName, p.lastName)}`} className="h-20 w-20 shrink-0 rounded-full border border-line object-cover" />
+              : <span className="grid h-20 w-20 shrink-0 place-items-center rounded-full bg-forest-100 font-display text-2xl font-semibold text-forest-800" aria-hidden>{`${p.firstName?.[0] ?? ''}${p.lastName?.[0] ?? ''}`.toUpperCase()}</span>}
+            <div className="min-w-0"><h2 className="font-display text-lg font-semibold text-forest-950">Details</h2>
+              {!p.photoAttachmentId && can('patients.write') && <p className="text-xs text-muted">Add a photo under Documents & photos, then tap the person icon on it.</p>}</div>
+          </div>
           <dl className="mt-3 divide-y divide-line text-sm">
             {rows.map(([k, v]) => <div key={k} className="grid grid-cols-5 gap-2 py-2.5"><dt className="col-span-2 text-muted">{k}</dt><dd className="col-span-3 text-ink">{v || '—'}</dd></div>)}
           </dl>
@@ -167,6 +205,15 @@ export function PatientDetail() {
             ]} />
         </Card>
       </div>
+      {hasFeature('laboratory') && can('lab.read') && (
+        <Card className="mt-6 p-5">
+          <h2 className="mb-3 font-display text-lg font-semibold text-forest-950">Lab trends</h2>
+          <LabTrends patientId={p.id} />
+        </Card>
+      )}
+      <Card className="mt-6 p-5">
+        <Attachments entityType="patient" entityId={p.id} canEdit={can('patients.write')} title="Documents & photos" timezone={tz} photoId={p.photoAttachmentId} onMakePhoto={makePhoto} onChange={reload} />
+      </Card>
       {editing && <PatientForm open patient={p} onClose={() => setEditing(false)} onSaved={() => { setEditing(false); notify.success('Patient updated.'); reload(); }} />}
     </>
   );

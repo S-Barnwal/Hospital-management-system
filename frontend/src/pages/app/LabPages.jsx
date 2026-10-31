@@ -1,13 +1,17 @@
 // Laboratory master data and work queues: Tests, Packages (+ price history), Samples, Results, Referral doctors.
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound } from 'react-icons/lu';
+import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound, LuListTree } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { dateTime, fullName, money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import EmailInput from '../../components/EmailInput.jsx';
+import { formatPhone } from '../../lib/contact.js';
+import { ParametersModal } from './LabExtras.jsx';
 
 const ActiveBadge = ({ on }) => <Badge tone={on ? 'green' : 'gray'}>{on ? 'Active' : 'Inactive'}</Badge>;
 const confirmDelete = (msg) => window.confirm(msg);
@@ -44,6 +48,7 @@ export function LabTests() {
   const { data: depts } = useApi(() => api.get('/lab/departments'), []);
   const { data, loading, error, reload } = useApi(() => api.get(`/lab/tests${qs({ all: 'true', q: search, department: dept })}`), [search, dept]);
   const [editing, setEditing] = useState(null);
+  const [paramsFor, setParamsFor] = useState(null);
   const f = useForm({});
   useEffect(() => {
     if (editing) f.setValues(editing === 'new' ? { code: '', name: '', department: '', description: '', sampleType: 'Blood', unit: '', refLow: '', refHigh: '', refText: '', price: '0', isActive: true }
@@ -78,11 +83,13 @@ export function LabTests() {
             { key: 'act', label: 'Actions', className: 'text-right', render: (t) => (
               <div className="flex justify-end gap-1">
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/app/lab-prices/test/${t.id}`)} aria-label="Price history" title="Price history"><LuIndianRupee aria-hidden /></Button>
+                <Button size="sm" variant="ghost" onClick={() => setParamsFor(t)} aria-label="Parameters" title="Parameters (panel)"><LuListTree aria-hidden />{t.parameterCount > 0 && <span className="text-xs">{t.parameterCount}</span>}</Button>
                 {can('lab.configure') && <Button size="sm" variant="ghost" onClick={() => setEditing(t)} aria-label="Edit" title="Edit"><LuPencil aria-hidden /></Button>}
                 {can('lab.configure') && <Button size="sm" variant="ghost" aria-label="Delete" title="Delete" onClick={async () => { if (confirmDelete(`Delete test “${t.name}”? Only possible if it was never ordered and is in no package.`) && (await withToast(() => api.del(`/lab/tests/${t.id}`), 'Test deleted.'))) reload(); }}><LuTrash2 aria-hidden /></Button>}
               </div>) },
           ]} />
       </Card>
+      {paramsFor && <ParametersModal test={paramsFor} onClose={(changed) => { setParamsFor(null); if (changed) reload(); }} />}
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'New test' : `Edit test — ${editing?.code ?? ''}`} size="lg"
         footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2" noValidate>
@@ -390,7 +397,7 @@ export function ReferralDoctors() {
           columns={[
             { key: 'name', label: 'Doctor', render: (r) => <div><p className="font-medium">{r.name}</p><p className="text-xs text-muted">{r.qualification}</p></div> },
             { key: 'clinic', label: 'Clinic', render: (r) => r.clinic || '—' },
-            { key: 'phone', label: 'Contact', render: (r) => <div className="text-xs"><p>{r.phone || '—'}</p><p className="text-muted">{r.email}</p></div> },
+            { key: 'phone', label: 'Contact', render: (r) => <div className="text-xs"><p>{formatPhone(r.phone) || '—'}</p><p className="text-muted">{r.email}</p></div> },
             { key: 'commissionPercent', label: 'Commission', className: 'text-right', render: (r) => `${Number(r.commissionPercent)}%` },
             { key: 'orders', label: 'Orders', className: 'text-right' },
             { key: 'business', label: 'Business', className: 'text-right', render: (r) => money(r.business) },
@@ -409,8 +416,8 @@ export function ReferralDoctors() {
           <Input label="Name" required {...f.bind('name')} error={f.errors.name} className="sm:col-span-2" />
           <Input label="Qualification" placeholder="MBBS, MD" {...f.bind('qualification')} />
           <Input label="Clinic / hospital" {...f.bind('clinic')} />
-          <Input label="Phone" {...f.bind('phone')} error={f.errors.phone} />
-          <Input label="Email" type="email" {...f.bind('email')} error={f.errors.email} />
+          <PhoneInput label="Phone" {...f.bind('phone')} error={f.errors.phone} className="sm:col-span-2" />
+          <EmailInput label="E-mail" {...f.bind('email')} error={f.errors.email} />
           <Input label="Commission (%)" type="number" min="0" max="100" step="0.01" {...f.bind('commissionPercent')} error={f.errors.commissionPercent} />
           <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" className="accent-forest-800" checked={Boolean(f.values.isActive)} onChange={(e) => f.setValues((s) => ({ ...s, isActive: e.target.checked }))} /> Active</label>
           {f.formError && <Alert tone="error" className="sm:col-span-2">{f.formError}</Alert>}

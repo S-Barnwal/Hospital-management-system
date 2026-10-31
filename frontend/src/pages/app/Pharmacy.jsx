@@ -7,19 +7,22 @@ import { useTenantAuth } from '../../context/AuthContext.jsx';
 import { notify, withToast } from '../../lib/toast.js';
 import { dateTime, money, todayIn } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, cx } from '../../components/ui.jsx';
+import PurchaseOrders from './PurchaseOrders.jsx';
 import { PatientPicker } from '../../components/Pickers.jsx';
+import PhoneInput from '../../components/PhoneInput.jsx';
+import { formatPhone } from '../../lib/contact.js';
 
 /** Today's date in the hospital's timezone. */
 const useToday = () => todayIn(useTenantAuth().me.tenant.timezone);
 
 const FORMS = ['Tablet', 'Capsule', 'Syrup', 'Injection', 'Ointment', 'Drops', 'Sachet', 'Inhaler', 'Other'];
-const blankMed = { name: '', genericName: '', form: 'Tablet', strength: '', unit: 'unit', hsnCode: '', taxRatePercent: '12', salePrice: '0', reorderLevel: '10', isActive: true };
+const blankMed = { name: '', genericName: '', form: 'Tablet', strength: '', unit: 'unit', hsnCode: '', taxRatePercent: '12', salePrice: '0', reorderLevel: '10', isActive: true, barcode: '' };
 
 function MedicineForm({ med, onClose, onSaved }) {
   const f = useForm(med ? { ...blankMed, ...Object.fromEntries(Object.entries(med).map(([k, v]) => [k, v ?? ''])), isActive: med.isActive } : blankMed);
   const save = f.submit(async (v) => {
     const body = { name: v.name, genericName: v.genericName || null, form: v.form || null, strength: v.strength || null, unit: v.unit || 'unit', hsnCode: v.hsnCode || null,
-      taxRatePercent: Number(v.taxRatePercent), salePrice: Number(v.salePrice), reorderLevel: Number(v.reorderLevel), isActive: Boolean(v.isActive) };
+      taxRatePercent: Number(v.taxRatePercent), salePrice: Number(v.salePrice), reorderLevel: Number(v.reorderLevel), isActive: Boolean(v.isActive), barcode: (v.barcode || '').trim() || null };
     if (med) await api.put(`/pharmacy/medicines/${med.id}`, body); else await api.post('/pharmacy/medicines', body);
     notify.success(med ? 'Medicine updated.' : 'Medicine added.');
     onSaved();
@@ -36,6 +39,7 @@ function MedicineForm({ med, onClose, onSaved }) {
         <Input label="GST %" type="number" min="0" max="100" step="0.01" {...f.bind('taxRatePercent')} />
         <Input label="Default sale price (₹)" type="number" min="0" step="0.01" {...f.bind('salePrice')} />
         <Input label="Reorder level" type="number" min="0" {...f.bind('reorderLevel')} />
+        <Input label="Barcode" placeholder="Scan the pack" {...f.bind('barcode')} error={f.errors.barcode} hint="Click here and scan the strip/bottle with a barcode scanner." />
         {med && <label className="flex items-end gap-2 pb-2 text-sm"><input type="checkbox" className="accent-forest-800" checked={Boolean(f.values.isActive)} onChange={(e) => f.setValues((s) => ({ ...s, isActive: e.target.checked }))} /> Active</label>}
         {f.formError && <Alert tone="error" className="sm:col-span-3">{f.formError}</Alert>}
       </form>
@@ -141,7 +145,25 @@ function Medicines() {
   const [page, setPage] = useState(1);
   const [editing, setEditing] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [scan, setScan] = useState('');
   const search = useDebounced(q);
+  const addLine = (m) => setLines((ls) => (ls.some((l) => l.id === m.id)
+    ? ls.map((l) => (l.id === m.id ? { ...l, quantity: String(Math.min(Number(l.quantity || 0) + 1, Number(m.stock))) } : l))
+    : [...ls, { ...m, quantity: '1' }]));
+  // A barcode scanner types the code and presses Enter.
+  const onScan = async (e) => {
+    if (e.key !== 'Enter') return;
+    e.preventDefault();
+    const code = scan.trim();
+    setScan('');
+    if (!code) return;
+    try {
+      const r = await api.get(`/pharmacy/medicines/by-barcode/${encodeURIComponent(code)}`);
+      if (!r.data.isActive) notify.error(`${r.data.name} is inactive.`);
+      else if (r.data.stock <= 0) notify.error(`${r.data.name}: out of stock.`);
+      else addLine(r.data);
+    } catch (err) { notify.error(err.status === 404 ? `No medicine with barcode ${code}.` : err.message); }
+  };
   useEffect(() => setPage(1), [search, low]);
   const { data, meta, loading, error, reload } = useApi(() => api.get(`/pharmacy/medicines${qs({ q: search, lowStock: low || undefined, page })}`), [search, low, page]);
   const today = useToday();
@@ -199,13 +221,15 @@ function Dispense() {
     <div className="grid gap-6 lg:grid-cols-3">
       <Card className="space-y-4 p-5 lg:col-span-2">
         <PatientPicker value={patient} onChange={setPatient} label="Patient (optional for walk-in)" required={false} />
+        <Input label="Scan barcode" placeholder="Click here, then scan packs one after another" value={scan} onChange={(e) => setScan(e.target.value)} onKeyDown={onScan} autoComplete="off"
+          hint="Each scan adds one unit. Works with any USB / Bluetooth barcode scanner." />
         <div className="relative">
-          <Input label="Add medicine" placeholder="Search medicine…" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" />
+          <Input label="Or search medicine" placeholder="Search medicine…" value={q} onChange={(e) => setQ(e.target.value)} autoComplete="off" />
           {found?.length > 0 && (
             <ul className="absolute z-20 mt-1 max-h-56 w-full overflow-auto rounded-lg border border-line bg-white shadow-[var(--shadow-lift)]">
               {found.map((m) => (
                 <li key={m.id}><button type="button" disabled={m.stock <= 0} className="flex w-full justify-between px-3 py-2 text-left text-sm hover:bg-forest-50 disabled:opacity-50"
-                  onClick={() => { setLines((ls) => (ls.some((l) => l.id === m.id) ? ls : [...ls, { ...m, quantity: '1' }])); setQ(''); }}>
+                  onClick={() => { addLine(m); setQ(''); }}>
                   <span>{m.name} {m.strength}</span><span className="text-xs text-muted">{m.stock} in stock · {money(m.salePrice)}</span></button></li>
               ))}
             </ul>
@@ -242,7 +266,12 @@ function Dispense() {
 }
 
 function Alerts() {
-  const { data, loading } = useApi(() => api.get('/pharmacy/alerts'), []);
+  const { can } = useTenantAuth();
+  const { data, loading, reload } = useApi(() => api.get('/pharmacy/alerts'), []);
+  const writeOff = async (e) => {
+    if (window.confirm(`Remove ${e.quantity} expired unit(s) of ${e.name} (batch ${e.batchNumber}) from stock?`)
+      && await withToast(() => api.post('/pharmacy/stock/expire-batch', { batchId: e.batchId }), 'Expired stock removed.')) reload();
+  };
   if (loading) return <Skeleton className="h-40 w-full" />;
   return (
     <div className="grid gap-6 lg:grid-cols-2">
@@ -251,7 +280,10 @@ function Alerts() {
           columns={[{ key: 'name', label: 'Medicine', render: (m) => `${m.name} ${m.strength ?? ''}` }, { key: 'stock', label: 'Stock' }, { key: 'reorderLevel', label: 'Reorder at' }]} /></Card>
       <Card><h2 className="border-b border-line px-5 py-4 font-display text-lg font-semibold">Expiring within 60 days / expired</h2>
         <DataTable rowKey="key" rows={data?.expiring?.map((e, i) => ({ ...e, key: i }))} empty={<EmptyState icon={LuTriangleAlert} title="Nothing expiring soon" />}
-          columns={[{ key: 'name', label: 'Medicine', render: (m) => `${m.name} ${m.strength ?? ''}` }, { key: 'batchNumber', label: 'Batch' }, { key: 'expiryDate', label: 'Expiry' }, { key: 'quantity', label: 'Qty' }]} /></Card>
+          columns={[{ key: 'name', label: 'Medicine', render: (m) => `${m.name} ${m.strength ?? ''}` }, { key: 'batchNumber', label: 'Batch' },
+            { key: 'expiryDate', label: 'Expiry', render: (m) => <span className={m.expired ? 'font-semibold text-red-700' : ''}>{m.expiryDate}{m.expired ? ' · expired' : ''}</span> },
+            { key: 'quantity', label: 'Qty' },
+            { key: 'act', label: <span className="sr-only">Action</span>, className: 'text-right', render: (m) => m.expired && can('pharmacy.configure') && <Button size="sm" variant="ghost" onClick={() => writeOff(m)}>Remove</Button> }]} /></Card>
     </div>
   );
 }
@@ -272,7 +304,7 @@ function Suppliers() {
       {can('pharmacy.configure') && <div className="flex justify-end border-b border-line p-4"><Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> Add supplier</Button></div>}
       <DataTable loading={loading} error={error} rows={data} empty={<EmptyState icon={LuTruck} title="No suppliers" />}
         columns={[
-          { key: 'name', label: 'Supplier', render: (s) => <span className="font-medium">{s.name}</span> }, { key: 'phone', label: 'Phone' }, { key: 'gstin', label: 'GSTIN' },
+          { key: 'name', label: 'Supplier', render: (s) => <span className="font-medium">{s.name}</span> }, { key: 'phone', label: 'Phone', render: (s) => formatPhone(s.phone) }, { key: 'gstin', label: 'GSTIN' },
           { key: 'act', label: <span className="sr-only">Actions</span>, className: 'text-right', render: (s) => can('pharmacy.configure') && (
             <div className="flex justify-end gap-1">
               <Button size="sm" variant="ghost" onClick={() => setEditing(s)} aria-label="Edit"><LuPencil aria-hidden /></Button>
@@ -282,7 +314,7 @@ function Suppliers() {
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'Add supplier' : 'Edit supplier'} size="sm" footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
         <form onSubmit={save} className="space-y-3" noValidate>
           <Input label="Name" required {...f.bind('name')} error={f.errors.name} />
-          <Input label="Phone" {...f.bind('phone')} />
+          <PhoneInput label="Phone" {...f.bind('phone')} error={f.errors.phone} />
           <Input label="GSTIN" {...f.bind('gstin')} />
           {f.formError && <Alert tone="error">{f.formError}</Alert>}
         </form>
@@ -295,7 +327,7 @@ export default function Pharmacy() {
   const { can } = useTenantAuth();
   const [params, setParams] = useSearchParams();
   const tab = params.get('tab') || 'medicines';
-  const tabs = [['medicines', 'Medicines & stock'], ...(can('pharmacy.write') ? [['dispense', 'Dispense']] : []), ['alerts', 'Alerts'], ['suppliers', 'Suppliers']];
+  const tabs = [['medicines', 'Medicines & stock'], ...(can('pharmacy.write') ? [['dispense', 'Dispense']] : []), ['orders', 'Purchase orders'], ['alerts', 'Alerts'], ['suppliers', 'Suppliers']];
   return (
     <>
       <PageHeader title="Pharmacy & inventory" subtitle="Batch-wise stock with expiry tracking and a full movement ledger." />
@@ -305,6 +337,7 @@ export default function Pharmacy() {
       {tab === 'medicines' && <Medicines />}
       {tab === 'dispense' && <Dispense />}
       {tab === 'alerts' && <Alerts />}
+      {tab === 'orders' && <PurchaseOrders />}
       {tab === 'suppliers' && <Suppliers />}
     </>
   );

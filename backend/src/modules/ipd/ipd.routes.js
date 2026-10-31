@@ -10,8 +10,7 @@ import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
-import { bedDays } from '../clinical/logic.js';
-import { addBillItem, getOrCreateDraftBill } from '../billing/billing.service.js';
+import { postBedCharges } from './bedCharges.service.js';
 
 const router = Router();
 router.use(requireTenant, requireFeature('ipd'));
@@ -138,7 +137,7 @@ router.get('/admissions', requirePermission('ipd.read'), asyncHandler(async (req
 router.get('/admissions/:id', requirePermission('ipd.read'), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   const [rows, transfers] = await db.many(`
-    SELECT ${ADM_COLS}, a.DischargeSummary AS dischargeSummary ${ADM_FROM} WHERE a.TenantId = @tid AND a.AdmissionId = @id;
+    SELECT ${ADM_COLS}, a.DischargeSummary AS dischargeSummary, p.Gender AS gender, CONVERT(CHAR(10), p.DateOfBirth, 23) AS dateOfBirth, s.RegistrationNumber AS doctorRegNo, s.Specialization AS doctorSpecialization ${ADM_FROM} WHERE a.TenantId = @tid AND a.AdmissionId = @id;
     SELECT bt.TransferredAt AS at, fb.BedNumber AS fromBed, fw.Name AS fromWard, tb.BedNumber AS toBed, tw.Name AS toWard
     FROM hms.BedTransfers bt
     JOIN hms.Beds fb ON fb.TenantId = bt.TenantId AND fb.BedId = bt.FromBedId JOIN hms.Wards fw ON fw.TenantId = fb.TenantId AND fw.WardId = fb.WardId
@@ -161,8 +160,8 @@ async function lockFreeBed(tx, tenantId, bedId) {
 
 router.post('/admissions', requirePermission('ipd.write'),
   validate(z.object({
-    patientId: z.number().int().positive(), bedId: z.number().int().positive(),
-    attendingDoctorId: z.number().int().positive().nullable().optional(), reason: z.string().trim().max(500).optional(),
+    patientId: z.coerce.number().int().positive(), bedId: z.coerce.number().int().positive(),
+    attendingDoctorId: z.coerce.number().int().positive().nullable().optional(), reason: z.string().trim().max(500).optional(),
   }).strict()),
   asyncHandler(async (req, res) => {
     const b = req.body;
@@ -189,7 +188,7 @@ router.post('/admissions', requirePermission('ipd.write'),
   }));
 
 router.post('/admissions/:id/transfer', requirePermission('ipd.write'),
-  validate(z.object({ toBedId: z.number().int().positive() }).strict()),
+  validate(z.object({ toBedId: z.coerce.number().int().positive() }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
@@ -209,7 +208,7 @@ router.post('/admissions/:id/transfer', requirePermission('ipd.write'),
   }));
 
 router.post('/admissions/:id/discharge', requirePermission('ipd.write'),
-  validate(z.object({ dischargeSummary: z.string().trim().min(3).max(4000), chargeBedDays: z.boolean().optional() }).strict()),
+  validate(z.object({ dischargeSummary: z.string().trim().max(4000).optional(), chargeBedDays: z.boolean().optional() }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     const result = await withTransaction(async (tx) => {
@@ -219,18 +218,22 @@ router.post('/admissions/:id/discharge', requirePermission('ipd.write'),
                                 WHERE a.TenantId = @tid AND a.AdmissionId = @id`, { tid: req.ctx.tenantId, id });
       if (!adm) throw notFound('Admission not found.');
       if (adm.Status !== 'admitted') throw conflict('Patient is already discharged.');
+      // A signed structured summary (Discharge summary tab) is preferred; a short typed summary is still accepted.
+      const ds = await tx.one('SELECT Status, FinalDiagnosis, ConditionAtDischarge FROM hms.DischargeSummaries WHERE TenantId = @tid AND AdmissionId = @id', { tid: req.ctx.tenantId, id });
+      const text = req.body.dischargeSummary?.trim()
+        || (ds?.Status === 'final' ? `Final diagnosis: ${ds.FinalDiagnosis}. Condition at discharge: ${ds.ConditionAtDischarge}. (Signed discharge summary on file.)` : '');
+      if (text.length < 3) throw badRequest('Sign the discharge summary first, or type a short summary.');
       const now = new Date();
       await tx.exec(`UPDATE hms.Admissions SET Status = 'discharged', DischargedAt = @now, DischargeSummary = @sum WHERE TenantId = @tid AND AdmissionId = @id`,
-        { tid: req.ctx.tenantId, id, now, sum: req.body.dischargeSummary });
+        { tid: req.ctx.tenantId, id, now, sum: text.slice(0, 4000) });
       await tx.exec(`UPDATE hms.Beds SET Status = 'available' WHERE TenantId = @tid AND BedId = @bed`, { tid: req.ctx.tenantId, bed: adm.BedId });
       let billId = null;
       if (req.body.chargeBedDays && Number(adm.DailyRate) > 0 && req.ctx.features.has('billing') && req.ctx.permissions.has('billing.write')) {
-        const days = bedDays(adm.AdmittedAt, now);
-        billId = await getOrCreateDraftBill(tx, req.ctx, adm.PatientId, id);
-        await addBillItem(tx, req.ctx.tenantId, billId, {
-          itemType: 'bed', description: `Bed charges — ${adm.WardName} (${adm.AdmissionNumber})`, quantity: days,
-          unitPrice: Number(adm.DailyRate).toFixed(2), taxRatePercent: 0, referenceType: 'admission', referenceId: id,
-        });
+        // Day-wise lines; days already charged by the daily job are skipped (never charged twice).
+        const added = await postBedCharges(tx, req.ctx, id, now);
+        const bill = await tx.one(`SELECT TOP 1 BillId FROM hms.Bills WHERE TenantId = @tid AND AdmissionId = @id AND Status = 'draft' ORDER BY CreatedAt DESC`, { tid: req.ctx.tenantId, id });
+        billId = bill?.BillId ?? null;
+        if (!added && !billId) billId = null;
       }
       await auditTenant(req, 'admission.discharged', 'admission', id, { billed: Boolean(billId) }, tx);
       return { billId };

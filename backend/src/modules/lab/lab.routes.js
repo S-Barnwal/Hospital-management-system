@@ -5,7 +5,7 @@ import { Router } from 'express';
 import { z } from 'zod';
 import { validate } from '../../middleware/validate.js';
 import { requireTenant, requirePermission, requireFeature } from '../../middleware/auth.js';
-import { asyncHandler, badRequest, conflict, notFound } from '../../utils/errors.js';
+import { asyncHandler, badRequest, conflict, notFound, HttpError } from '../../utils/errors.js';
 import { db, withTransaction, t } from '../../db/pool.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
@@ -16,7 +16,14 @@ import { toMinor as strictMinor, fromMinor } from '../../utils/pricing.js';
 const toMinor = (v) => strictMinor(Number(v || 0).toFixed(2));
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
 import { labFlag, canMoveLab, allocatePackagePrice, labPaymentStatus, canMoveSample, balanceDue } from '../clinical/logic.js';
+import { panelFlag } from '../clinical/phase3.logic.js';
+import { PARAMS_SQL, attachParameters } from './lab.shared.js';
+import labExtrasRoutes from './labExtras.routes.js';
+import { config } from '../../config/env.js';
+import { randomToken, sha256Hex } from '../../utils/crypto.js';
+import { deliver, templates } from '../../notify/index.js';
 import { addBillItem, getOrCreateDraftBill, createDraftBill, recalcBill, finalizeBill, recordBillPayment } from '../billing/billing.service.js';
+import { optionalPhone, optionalEmail } from '../../utils/contact.js';
 
 const router = Router();
 router.use(requireTenant, requireFeature('laboratory'));
@@ -44,7 +51,8 @@ router.get('/departments', requirePermission('lab.read'), asyncHandler(async (re
 // ---------- Test catalogue ----------
 router.get('/tests', requirePermission('lab.read'), asyncHandler(async (req, res) => {
   const rows = await db.query(`SELECT LabTestId AS id, Code AS code, Name AS name, Department AS department, Description AS description, SampleType AS sampleType,
-                                      Unit AS unit, RefLow AS refLow, RefHigh AS refHigh, RefText AS refText, Price AS price, IsActive AS isActive
+                                      Unit AS unit, RefLow AS refLow, RefHigh AS refHigh, RefText AS refText, Price AS price, IsActive AS isActive,
+                                      (SELECT COUNT(*) FROM hms.LabTestParameters lp WHERE lp.TenantId = LabTests.TenantId AND lp.LabTestId = LabTests.LabTestId AND lp.IsActive = 1) AS parameterCount
                                FROM hms.LabTests WHERE TenantId = @tid AND (@all = 1 OR IsActive = 1)
                                  AND (@q IS NULL OR Name LIKE @q OR Code LIKE @q) AND (@dept IS NULL OR Department = @dept)
                                ORDER BY Name`,
@@ -182,7 +190,7 @@ router.get('/packages/:id', requirePermission('lab.read'), asyncHandler(async (r
 
 const packageBase = {
   name: z.string().trim().min(2).max(150), department: optText(60), description: optText(500), isActive: z.boolean().optional(),
-  testIds: z.array(z.number().int().positive()).min(1, 'Select at least one test').max(60),
+  testIds: z.array(z.coerce.number().int().positive()).min(1, 'Select at least one test').max(60),
 };
 
 async function setPackageTests(tx, tenantId, packageId, testIds) {
@@ -254,8 +262,8 @@ router.get('/referrals', requirePermission('lab.read'), asyncHandler(async (req,
 
 const referralSchema = z.object({
   name: z.string().trim().min(2).max(150), qualification: optText(100), clinic: optText(150),
-  phone: z.string().trim().regex(/^[+\d][\d\s-]{5,20}$/, 'Enter a valid phone number').or(z.literal('')).nullable().optional(),
-  email: z.string().trim().toLowerCase().email().max(254).or(z.literal('')).nullable().optional(),
+  phone: optionalPhone,
+  email: optionalEmail,
   commissionPercent: z.coerce.number().min(0).max(100).default(0), isActive: z.boolean().optional(),
 }).strict();
 const referralParams = (b) => ({ name: b.name, q: b.qualification || null, clinic: b.clinic || null, phone: b.phone || null, email: b.email || null,
@@ -341,16 +349,22 @@ router.get('/orders', requirePermission('lab.read'), asyncHandler(async (req, re
 }));
 
 const orderSchema = z.object({
-  patientId: z.number().int().positive(), doctorId: z.number().int().positive().nullable().optional(),
-  referralDoctorId: z.number().int().positive().nullable().optional(),
-  consultationId: z.number().int().positive().nullable().optional(),
-  testIds: z.array(z.number().int().positive()).max(40).default([]),
-  packageIds: z.array(z.number().int().positive()).max(10).default([]),
+  patientId: z.coerce.number().int().positive(), doctorId: z.coerce.number().int().positive().nullable().optional(),
+  referralDoctorId: z.coerce.number().int().positive().nullable().optional(),
+  consultationId: z.coerce.number().int().positive().nullable().optional(),
+  testIds: z.array(z.coerce.number().int().positive()).max(40).default([]),
+  packageIds: z.array(z.coerce.number().int().positive()).max(10).default([]),
   priority: z.enum(['routine', 'urgent']).default('routine'), notes: z.string().trim().max(500).optional(),
   discount: z.coerce.number().min(0).max(1e7).default(0),
   addToBill: z.boolean().optional(),
   payment: z.object({
     amount: z.coerce.number().min(0).max(1e9), method: z.enum(['cash', 'card', 'upi', 'bank', 'other']), reference: z.string().trim().max(100).optional(),
+  }).strict().optional(),
+  // Sample collected at the patient's home (Phase 3). The charge is added to the order and its invoice.
+  homeCollection: z.object({
+    address: z.string().trim().min(5, 'Enter the full address.').max(400), landmark: z.string().trim().max(150).optional(),
+    contactPhone: optionalPhone, scheduledAt: z.string().datetime({ offset: true }),
+    charge: z.coerce.number().min(0).max(1e6).default(0), notes: z.string().trim().max(300).optional(),
   }).strict().optional(),
 }).strict().refine((v) => v.testIds.length + v.packageIds.length > 0, { message: 'Select at least one test or package.', path: ['testIds'] });
 
@@ -403,7 +417,8 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
     }
     for (const test of tests) addLine(test, toMinor(test.Price), null);
 
-    const grossMinor = lines.reduce((a, l) => a + l.priceMinor, 0);
+    const homeChargeMinor = b.homeCollection ? toMinor(b.homeCollection.charge || 0) : 0;
+    const grossMinor = lines.reduce((a, l) => a + l.priceMinor, 0) + homeChargeMinor;
     const discountMinor = toMinor(b.discount || 0);
     if (discountMinor > grossMinor) throw badRequest('Discount cannot be more than the order total.');
 
@@ -417,11 +432,26 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
       gross: t.money(fromMinor(grossMinor)), disc: t.money(fromMinor(discountMinor)), net: t.money(fromMinor(grossMinor - discountMinor)) });
 
     for (const { test, priceMinor, pkg } of lines) {
-      await tx.exec(`INSERT INTO hms.LabOrderItems (TenantId, LabOrderId, LabTestId, TestName, Unit, RefLow, RefHigh, RefText, Price, LabPackageId, PackageName)
+      const item = await tx.one(`INSERT INTO hms.LabOrderItems (TenantId, LabOrderId, LabTestId, TestName, Unit, RefLow, RefHigh, RefText, Price, LabPackageId, PackageName)
+                     OUTPUT INSERTED.LabOrderItemId
                      VALUES (@tid, @oid, @test, @name, @unit, @lo, @hi, @txt, @price, @pkg, @pkgName)`,
       { tid: ctx.tenantId, oid: order.LabOrderId, test: test.LabTestId, name: test.Name, unit: test.Unit, lo: test.RefLow == null ? null : t.dec(test.RefLow, 12, 4),
         hi: test.RefHigh == null ? null : t.dec(test.RefHigh, 12, 4), txt: test.RefText, price: t.money(fromMinor(priceMinor)),
         pkg: pkg ? pkg.LabPackageId : null, pkgName: pkg ? pkg.Name : null });
+      // Panel tests (e.g. CBC): snapshot every active parameter so later catalogue edits never change this order.
+      await tx.exec(`INSERT INTO hms.LabResultValues (TenantId, LabOrderItemId, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder)
+                     SELECT TenantId, @item, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder
+                     FROM hms.LabTestParameters WHERE TenantId = @tid AND LabTestId = @test AND IsActive = 1`,
+      { tid: ctx.tenantId, item: item.LabOrderItemId, test: test.LabTestId });
+    }
+
+    if (b.homeCollection) {
+      const h = b.homeCollection;
+      if (new Date(h.scheduledAt) < new Date(Date.now() - 60 * 60 * 1000)) throw badRequest('The collection time is in the past.');
+      await tx.exec(`INSERT INTO hms.LabHomeCollections (TenantId, LabOrderId, Address, Landmark, ContactPhone, ScheduledAt, Charge, Notes)
+                     VALUES (@tid, @oid, @addr, @lm, @ph, @at, @charge, @notes)`,
+      { tid: ctx.tenantId, oid: order.LabOrderId, addr: h.address, lm: h.landmark || null, ph: h.contactPhone || null, at: new Date(h.scheduledAt),
+        charge: t.money(fromMinor(homeChargeMinor)), notes: h.notes || null });
     }
 
     // One sample per sample type
@@ -452,6 +482,10 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
         await addBillItem(tx, ctx.tenantId, billId, { itemType: 'lab', description: `${test.Name} (${order.OrderNumber})`, quantity: 1,
           unitPrice: Number(test.Price).toFixed(2), taxRatePercent: 0, referenceType: 'lab_order', referenceId: order.LabOrderId });
       }
+      if (homeChargeMinor > 0) {
+        await addBillItem(tx, ctx.tenantId, billId, { itemType: 'lab', description: `Home sample collection (${order.OrderNumber})`, quantity: 1,
+          unitPrice: fromMinor(homeChargeMinor), taxRatePercent: 0, referenceType: 'lab_order', referenceId: order.LabOrderId });
+      }
       if (ownBill) {
         if (discountMinor > 0) await recalcBill(tx, ctx.tenantId, billId, fromMinor(discountMinor));
         await finalizeBill(tx, ctx.tenantId, billId);
@@ -471,7 +505,7 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
 
 router.get('/orders/:id', requirePermission('lab.read'), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
-  const [orders, items, samples] = await db.many(`
+  const [orders, rawItems, samples, params, home] = await db.many(`
     SELECT o.*, p.PatientNumber, p.FirstName, p.LastName, p.Gender, p.Phone AS PatientPhone, CONVERT(CHAR(10), p.DateOfBirth, 23) AS DateOfBirth, s.FullName AS DoctorName,
            rd.Name AS ReferralName, rd.Clinic AS ReferralClinic, b.BillNumber, b.Status AS BillStatus, b.Total AS BillTotal, b.PaidAmount AS BillPaid,
            v.FullName AS VerifiedByName, t.Name AS HospitalName, t.Phone AS HospitalPhone,
@@ -485,7 +519,12 @@ router.get('/orders/:id', requirePermission('lab.read'), asyncHandler(async (req
     FROM hms.LabOrderItems i LEFT JOIN hms.LabTests lt ON lt.TenantId = i.TenantId AND lt.LabTestId = i.LabTestId
     WHERE i.TenantId = @tid AND i.LabOrderId = @id ORDER BY i.PackageName, i.LabOrderItemId;
     SELECT LabSampleId AS id, SampleNumber AS number, SampleType AS sampleType, Status AS status, CollectedAt AS collectedAt, ReceivedAt AS receivedAt, RejectReason AS rejectReason
-    FROM hms.LabSamples WHERE TenantId = @tid AND LabOrderId = @id ORDER BY SampleType;`, { tid: req.ctx.tenantId, id });
+    FROM hms.LabSamples WHERE TenantId = @tid AND LabOrderId = @id ORDER BY SampleType;
+    ${PARAMS_SQL}
+    SELECT h.HomeCollectionId AS id, h.Address AS address, h.Landmark AS landmark, h.ContactPhone AS contactPhone, h.ScheduledAt AS scheduledAt, h.Status AS status,
+           h.Charge AS charge, h.Notes AS notes, h.CollectedAt AS collectedAt, h.CollectorStaffId AS collectorStaffId, s.FullName AS collectorName
+    FROM hms.LabHomeCollections h LEFT JOIN hms.StaffMembers s ON s.TenantId = h.TenantId AND s.StaffId = h.CollectorStaffId
+    WHERE h.TenantId = @tid AND h.LabOrderId = @id;`, { tid: req.ctx.tenantId, id });
   const o = orders[0];
   if (!o) throw notFound('Lab order not found.');
   await auditTenant(req, 'lab_order.viewed', 'lab_order', id);
@@ -500,7 +539,8 @@ router.get('/orders/:id', requirePermission('lab.read'), asyncHandler(async (req
       bill: o.BillId ? { id: o.BillId, number: o.BillNumber, status: o.BillStatus, total: o.BillTotal, paid: o.BillPaid, own: Boolean(o.OwnBill) } : null,
       patient: { id: o.PatientId, patientNumber: o.PatientNumber, firstName: o.FirstName, lastName: o.LastName, gender: o.Gender, dateOfBirth: o.DateOfBirth, phone: o.PatientPhone },
       hospital: { name: o.HospitalName, address: o.HospitalAddress, phone: o.HospitalPhone },
-      items, samples,
+      items: attachParameters(rawItems, params), samples,
+      homeCollection: home[0] ?? null,
     },
   });
 }));
@@ -528,7 +568,10 @@ router.post('/orders/:id/status', requirePermission('lab.write'),
   }));
 
 router.put('/orders/:id/results', requirePermission('lab.write'),
-  validate(z.object({ results: z.array(z.object({ itemId: z.number().int().positive(), value: z.string().trim().max(200) }).strict()).min(1).max(60) }).strict()),
+  validate(z.object({
+    results: z.array(z.object({ itemId: z.coerce.number().int().positive(), value: z.string().trim().max(200) }).strict()).max(60).default([]),
+    parameters: z.array(z.object({ id: z.coerce.number().int().positive(), value: z.string().trim().max(200) }).strict()).max(300).default([]),
+  }).strict().refine((v) => v.results.length + v.parameters.length > 0, 'Enter at least one result.')),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     const status = await withTransaction(async (tx) => {
@@ -539,9 +582,34 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
       }
       const items = await tx.query('SELECT LabOrderItemId, RefLow, RefHigh FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
       const byId = new Map(items.map((i) => [Number(i.LabOrderItemId), i]));
+      const panelRows = await tx.query(`SELECT v.ResultValueId, v.LabOrderItemId, v.RefLow, v.RefHigh FROM hms.LabResultValues v
+          JOIN hms.LabOrderItems i ON i.TenantId = v.TenantId AND i.LabOrderItemId = v.LabOrderItemId WHERE v.TenantId = @tid AND i.LabOrderId = @id`,
+      { tid: req.ctx.tenantId, id });
+      const panelItems = new Set(panelRows.map((r) => Number(r.LabOrderItemId)));
+      const paramById = new Map(panelRows.map((r) => [Number(r.ResultValueId), r]));
+      const touchedPanels = new Set();
+      for (const r of req.body.parameters) {
+        const row = paramById.get(r.id);
+        if (!row) throw badRequest('Result refers to a parameter that is not on this order.');
+        const value = r.value || null;
+        const numeric = value !== null && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : null;
+        await tx.exec(`UPDATE hms.LabResultValues SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
+                       WHERE TenantId = @tid AND ResultValueId = @rid`,
+        { tid: req.ctx.tenantId, rid: r.id, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f: labFlag(numeric, row.RefLow, row.RefHigh), uid: req.ctx.userId });
+        touchedPanels.add(Number(row.LabOrderItemId));
+      }
+      // A panel line is "done" when every parameter has a value; its flag summarises the parameters.
+      for (const itemId of touchedPanels) {
+        const ps = await tx.query('SELECT ResultValue, Flag FROM hms.LabResultValues WHERE TenantId = @tid AND LabOrderItemId = @item', { tid: req.ctx.tenantId, item: itemId });
+        const done = ps.every((x) => x.ResultValue !== null);
+        await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = NULL, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
+                       WHERE TenantId = @tid AND LabOrderId = @id AND LabOrderItemId = @item`,
+        { tid: req.ctx.tenantId, id, item: itemId, v: done ? `${ps.length} parameters` : null, f: done ? panelFlag(ps.map((x) => x.Flag)) : null, uid: req.ctx.userId });
+      }
       for (const r of req.body.results) {
         const item = byId.get(r.itemId);
         if (!item) throw badRequest('Result refers to a test that is not on this order.');
+        if (panelItems.has(r.itemId)) throw badRequest('Enter this test’s result parameter by parameter.');
         const value = r.value || null;
         const numeric = value !== null && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : null;
         await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
@@ -552,7 +620,7 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
       const next = pending.n === 0 ? 'completed' : 'sample_collected';
       await tx.exec(`UPDATE hms.LabOrders SET Status = @s, CompletedAt = CASE WHEN @s = 'completed' THEN SYSUTCDATETIME() ELSE NULL END WHERE TenantId = @tid AND LabOrderId = @id`,
         { tid: req.ctx.tenantId, id, s: next });
-      await auditTenant(req, 'lab_order.results_entered', 'lab_order', id, { count: req.body.results.length }, tx);
+      await auditTenant(req, 'lab_order.results_entered', 'lab_order', id, { count: req.body.results.length + req.body.parameters.length }, tx);
       return next;
     });
     res.json({ data: { status } });
@@ -568,6 +636,56 @@ router.post('/orders/:id/verify', requirePermission('lab.verify'), asyncHandler(
       { tid: req.ctx.tenantId, id, uid: req.ctx.userId });
     await auditTenant(req, 'lab_order.verified', 'lab_order', id, null, tx);
   });
+  res.json({ data: { ok: true } });
+}));
+
+// ---------- Share a verified report with the patient (secure link + OTP) ----------
+const SHARE_DAYS = 7;
+
+router.post('/orders/:id/share', requirePermission('lab.write'),
+  validate(z.object({ channel: z.enum(['whatsapp', 'email']) }).strict()),
+  asyncHandler(async (req, res) => {
+    const id = idParam(req.params.id);
+    const o = await db.one(`SELECT o.Status, p.FirstName, p.Phone, p.Email, t.Name AS HospitalName
+                            FROM hms.LabOrders o JOIN hms.Patients p ON p.TenantId = o.TenantId AND p.PatientId = o.PatientId
+                            JOIN hms.Tenants t ON t.TenantId = o.TenantId WHERE o.TenantId = @tid AND o.LabOrderId = @id`, { tid: req.ctx.tenantId, id });
+    if (!o) throw notFound('Lab order not found.');
+    if (o.Status !== 'verified') throw conflict('Only verified reports can be sent to the patient.', 'LAB_STATE');
+    const { channel } = req.body;
+    if (channel === 'whatsapp' && !o.Phone) throw badRequest('This patient has no mobile number. Add it on the patient’s page first.');
+    if (channel === 'email' && !o.Email) throw badRequest('This patient has no e-mail address. Add it on the patient’s page first.');
+
+    const token = randomToken(32);
+    const share = await db.one(`INSERT INTO hms.ReportShares (TenantId, LabOrderId, TokenHash, Channel, ExpiresAt, CreatedByUserId)
+                                OUTPUT INSERTED.ShareId, INSERTED.ExpiresAt
+                                VALUES (@tid, @id, @h, @ch, DATEADD(DAY, ${SHARE_DAYS}, SYSUTCDATETIME()), @uid)`,
+    { tid: req.ctx.tenantId, id, h: sha256Hex(token), ch: channel, uid: req.ctx.userId });
+    const link = `${config.publicAppUrl}/report/${token}`;
+    const args = { hospital: o.HospitalName, patientFirst: o.FirstName, link, days: SHARE_DAYS };
+    const r = await deliver({ channel, to: channel === 'email' ? o.Email : o.Phone, template: 'report_link', tenantId: req.ctx.tenantId,
+      related: { type: 'lab_order', id }, content: channel === 'email' ? templates.email.reportLink(args) : templates.whatsapp.reportLink(args) });
+    if (r.status === 'failed' || r.status === 'skipped') {
+      await db.exec('UPDATE hms.ReportShares SET RevokedAt = SYSUTCDATETIME() WHERE ShareId = @sid AND TenantId = @tid', { sid: share.ShareId, tid: req.ctx.tenantId });
+      throw new HttpError(502, 'NOT_SENT', `The report link could not be sent: ${r.error || 'unknown error'}`);
+    }
+    await auditTenant(req, 'lab_report.shared', 'lab_order', id, { channel, to: r.masked });
+    res.status(201).json({ data: { sentTo: r.masked, status: r.status, expiresAt: share.ExpiresAt } });
+  }));
+
+router.get('/orders/:id/shares', requirePermission('lab.read'), asyncHandler(async (req, res) => {
+  const rows = await db.query(`SELECT rs.ShareId AS id, rs.Channel AS channel, rs.CreatedAt AS createdAt, rs.ExpiresAt AS expiresAt, rs.AccessCount AS accessCount,
+                                      rs.LastAccessAt AS lastAccessAt, rs.RevokedAt AS revokedAt, u.FullName AS createdBy
+                               FROM hms.ReportShares rs LEFT JOIN hms.Users u ON u.TenantId = rs.TenantId AND u.UserId = rs.CreatedByUserId
+                               WHERE rs.TenantId = @tid AND rs.LabOrderId = @id ORDER BY rs.CreatedAt DESC`, { tid: req.ctx.tenantId, id: idParam(req.params.id) });
+  res.json({ data: rows });
+}));
+
+router.post('/orders/:id/shares/:shareId/revoke', requirePermission('lab.write'), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  const n = await db.exec(`UPDATE hms.ReportShares SET RevokedAt = SYSUTCDATETIME() WHERE TenantId = @tid AND LabOrderId = @id AND ShareId = @sid AND RevokedAt IS NULL`,
+    { tid: req.ctx.tenantId, id, sid: idParam(req.params.shareId, 'shareId') });
+  if (!n) throw notFound('Link not found or already revoked.');
+  await auditTenant(req, 'lab_report.share_revoked', 'lab_order', id);
   res.json({ data: { ok: true } });
 }));
 
@@ -638,5 +756,8 @@ router.post('/samples/:id/:action', requirePermission('lab.write'),
     });
     res.json({ data: { ok: true } });
   }));
+
+// Phase 3: test parameters, patient trends, home collection.
+router.use(labExtrasRoutes);
 
 export default router;

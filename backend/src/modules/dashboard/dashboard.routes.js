@@ -32,8 +32,8 @@ router.get('/summary', requireTenant, requirePermission('dashboard.view'), async
       (SELECT COUNT(*) FROM hms.Beds WHERE TenantId = @tid AND Status = 'occupied') AS occupiedBeds,
       (SELECT COUNT(*) FROM hms.Bills WHERE TenantId = @tid AND Status = 'finalized' AND PaidAmount < Total) AS pendingBills,
       (SELECT ISNULL(SUM(Total - PaidAmount), 0) FROM hms.Bills WHERE TenantId = @tid AND Status = 'finalized' AND PaidAmount < Total) AS pendingAmount,
-      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end) AS collectedToday,
-      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.BillPayments WHERE TenantId = @tid AND ReceivedAt >= @monthStart) AS collectedThisMonth,
+      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.MoneyReceived WHERE TenantId = @tid AND ReceivedAt >= @start AND ReceivedAt < @end) AS collectedToday,
+      (SELECT ISNULL(SUM(CASE WHEN Kind = 'payment' THEN Amount ELSE -Amount END), 0) FROM hms.MoneyReceived WHERE TenantId = @tid AND ReceivedAt >= @monthStart) AS collectedThisMonth,
       (SELECT COUNT(*) FROM (SELECT m.MedicineId, m.ReorderLevel,
           ISNULL((SELECT SUM(QuantityOnHand) FROM hms.StockBatches sb WHERE sb.TenantId = m.TenantId AND sb.MedicineId = m.MedicineId AND sb.ExpiryDate >= CAST(@start AS DATE)), 0) AS stock
         FROM hms.Medicines m WHERE m.TenantId = @tid AND m.IsActive = 1) x WHERE x.stock <= x.ReorderLevel) AS lowStock,

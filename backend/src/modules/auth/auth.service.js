@@ -1,16 +1,64 @@
-import { randomUUID } from 'node:crypto';
+import { randomUUID, randomInt } from 'node:crypto';
 import { config } from '../../config/env.js';
 import { db, withTransaction } from '../../db/pool.js';
 import { signJwt } from '../../utils/jwt.js';
-import { randomToken, sha256Hex } from '../../utils/crypto.js';
+import { randomToken, sha256Hex, safeEqual } from '../../utils/crypto.js';
 import { verifyPassword, hashPassword, passwordProblem } from '../../utils/password.js';
 import { badRequest, unauthorized, HttpError } from '../../utils/errors.js';
 import { audit } from '../../utils/audit.js';
 import { COOKIES } from '../../middleware/auth.js';
+import { deliver, templates } from '../../notify/index.js';
+import { recordLogin } from '../../utils/loginEvents.js';
 
 const MAX_FAILED = 5;
 const LOCK_MINUTES = 15;
 const RESET_TTL_MIN = 30;
+const OTP_TTL_MIN = 10;
+const OTP_MAX_ATTEMPTS = 5;
+/** Roles that must use 2-step sign-in when the hospital turns it on in Settings. */
+const MFA_ROLES = ['owner', 'hospital_admin'];
+
+// ───────── 2-step sign-in (e-mail one-time code) ─────────
+const otpHash = (challengeId, code) => sha256Hex(`${challengeId}:${code}`);
+
+/** Creates a challenge, e-mails the code, returns what the browser needs (never the code). */
+async function startChallenge({ subjectType, subjectId, tenantId = null, email, name, ip }) {
+  const challengeId = randomUUID();
+  const code = String(randomInt(0, 1000000)).padStart(6, '0');
+  await db.exec(`INSERT INTO hms.LoginChallenges (ChallengeId, SubjectType, SubjectId, TenantId, CodeHash, ExpiresAt, IpAddress)
+                 VALUES (@cid, @type, @sid, @tid, @hash, DATEADD(MINUTE, ${OTP_TTL_MIN}, SYSUTCDATETIME()), @ip)`,
+  { cid: challengeId, type: subjectType, sid: subjectId, tid: tenantId, hash: otpHash(challengeId, code), ip: ip ?? null });
+  const sent = await deliver({ channel: 'email', to: email, template: 'login_otp', tenantId,
+    content: templates.email.loginOtp({ name, code, minutes: OTP_TTL_MIN }), related: { type: subjectType === 'tenant' ? 'user' : 'platform_user', id: subjectId } });
+  if (sent.status === 'failed' || sent.status === 'skipped') {
+    throw new HttpError(503, 'OTP_NOT_SENT', 'We could not send your sign-in code. Try again in a minute or contact your administrator.');
+  }
+  return { mfaRequired: true, challengeId, sentTo: sent.masked, expiresInMinutes: OTP_TTL_MIN };
+}
+
+/** Checks a code; returns { subjectId, tenantId } once, or throws. Wrong codes count towards a limit. */
+async function consumeChallenge({ subjectType, challengeId, code }) {
+  return withTransaction(async (tx) => {
+    const c = await tx.one(`/* tenant-safe: looked up by secret challenge id */ SELECT * FROM hms.LoginChallenges WITH (UPDLOCK, ROWLOCK) WHERE ChallengeId = @cid AND SubjectType = @type`,
+      { cid: challengeId, type: subjectType });
+    const invalid = () => unauthorized('This code is wrong or has expired. Sign in again to get a new code.');
+    if (!c || c.ConsumedAt || new Date(c.ExpiresAt) < new Date() || c.Attempts >= OTP_MAX_ATTEMPTS) throw invalid();
+    if (!safeEqual(c.CodeHash, otpHash(challengeId, String(code).trim()))) {
+      await tx.exec('UPDATE hms.LoginChallenges SET Attempts = Attempts + 1 WHERE ChallengeId = @cid', { cid: challengeId });
+      return null;
+    }
+    await tx.exec('UPDATE hms.LoginChallenges SET ConsumedAt = SYSUTCDATETIME() WHERE ChallengeId = @cid', { cid: challengeId });
+    return { subjectId: c.SubjectId, tenantId: c.TenantId };
+  }).then((r) => { if (!r) throw unauthorized('Incorrect code. Please check the e-mail and try again.'); return r; });
+}
+
+async function tenantNeedsMfa(tenantId, userId) {
+  const r = await db.one(`SELECT
+      (SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = @tid AND SettingKey = 'security.mfa_admins') AS setting,
+      (SELECT COUNT(*) FROM hms.UserRoles ur JOIN hms.Roles r ON r.TenantId = ur.TenantId AND r.RoleId = ur.RoleId
+        WHERE ur.TenantId = @tid AND ur.UserId = @uid AND r.Code IN ('${MFA_ROLES.join("','")}')) AS adminRoles`, { tid: tenantId, uid: userId });
+  return r?.setting === 'on' && r.adminRoles > 0;
+}
 
 const kindCookies = (kind) => (kind === 'platform'
   ? { access: COOKIES.adminAccess, refresh: COOKIES.adminRefresh }
@@ -62,7 +110,7 @@ export async function refreshSession(kind, refreshToken, meta) {
     if (!s || s.SubjectType !== kind) throw unauthorized();
     if (s.RevokedAt) {
       // Token reuse → likely theft. Revoke every session of this subject.
-      await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
+      await tx.exec(`/* tenant-safe: user ids are globally unique */ UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
                      WHERE SubjectType = @type AND SubjectId = @id AND RevokedAt IS NULL`, { type: s.SubjectType, id: s.SubjectId });
       await audit({ tenantId: s.TenantId, actorType: kind, actorId: s.SubjectId, action: 'auth.refresh_reuse_detected', ip: meta.ip }, tx);
       throw unauthorized('Session expired. Please sign in again.');
@@ -110,7 +158,7 @@ async function registerFailure(table, idCol, id) {
 export async function tenantLogin({ email, password, workspace }, { hostSlug, ip, userAgent }) {
   const slug = hostSlug || workspace || null;
   const candidates = await db.query(
-    `SELECT u.UserId, u.TenantId, u.PasswordHash, u.Status, u.LockedUntil, t.Slug, t.Name AS TenantName, t.Status AS TenantStatus
+    `SELECT u.UserId, u.TenantId, u.Email, u.FullName, u.PasswordHash, u.Status, u.LockedUntil, t.Slug, t.Name AS TenantName, t.Status AS TenantStatus
      FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
      WHERE u.Email = @email AND (@slug IS NULL OR t.Slug = @slug)`,
     { email: email.toLowerCase(), slug },
@@ -120,7 +168,9 @@ export async function tenantLogin({ email, password, workspace }, { hostSlug, ip
   }
   const user = candidates[0];
   const valid = await verifyPassword(password, user?.PasswordHash);
+  const ev = { subjectType: 'tenant', tenantId: user?.TenantId ?? null, userId: user?.UserId ?? null, email, ip, userAgent };
   if (user?.LockedUntil && new Date(user.LockedUntil) > new Date()) {
+    await recordLogin({ ...ev, success: false, reason: 'locked' });
     throw new HttpError(429, 'LOCKED', 'Too many failed attempts. Try again in a few minutes.');
   }
   if (!user || !valid) {
@@ -128,18 +178,42 @@ export async function tenantLogin({ email, password, workspace }, { hostSlug, ip
       await registerFailure('Users', 'UserId', user.UserId);
       await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.login_failed', ip });
     }
+    await recordLogin({ ...ev, success: false, reason: user ? 'bad_password' : 'unknown_user' });
     throw unauthorized('Incorrect e-mail, password or workspace.');
   }
-  if (user.Status !== 'active') throw unauthorized('This account is disabled. Contact your hospital administrator.');
+  if (user.Status !== 'active') {
+    await recordLogin({ ...ev, success: false, reason: 'disabled' });
+    throw unauthorized('This account is disabled. Contact your hospital administrator.');
+  }
   if (user.TenantStatus === 'pending' || user.TenantStatus === 'deactivated') {
+    await recordLogin({ ...ev, success: false, reason: 'tenant_inactive' });
     throw new HttpError(403, 'TENANT_INACTIVE', 'This hospital workspace is not active.');
   }
 
+  if (await tenantNeedsMfa(user.TenantId, user.UserId)) {
+    await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.otp_sent', ip });
+    return startChallenge({ subjectType: 'tenant', subjectId: user.UserId, tenantId: user.TenantId, email: user.Email, name: user.FullName, ip });
+  }
+  return completeTenantLogin(user.UserId, user.TenantId, { ip, userAgent });
+}
+
+async function completeTenantLogin(userId, tenantId, { ip, userAgent }) {
+  const u = await db.one(`SELECT u.Status, t.Slug, t.Name AS TenantName FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
+                          WHERE u.UserId = @id AND u.TenantId = @tid`, { id: userId, tid: tenantId });
+  if (!u || u.Status !== 'active') throw unauthorized('This account is disabled. Contact your hospital administrator.');
   await db.exec('UPDATE hms.Users SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE UserId = @id AND TenantId = @tid',
-    { id: user.UserId, tid: user.TenantId });
-  const session = await createSession({ subjectType: 'tenant', subjectId: user.UserId, tenantId: user.TenantId, userAgent, ip });
-  await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.login', ip });
-  return { ...session, tenant: { slug: user.Slug, name: user.TenantName } };
+    { id: userId, tid: tenantId });
+  const session = await createSession({ subjectType: 'tenant', subjectId: userId, tenantId, userAgent, ip });
+  await audit({ tenantId, actorType: 'tenant', actorId: userId, action: 'auth.login', ip });
+  const who = await db.one('SELECT Email FROM hms.Users WHERE UserId = @id AND TenantId = @tid', { id: userId, tid: tenantId });
+  await recordLogin({ subjectType: 'tenant', tenantId, userId, email: who?.Email, success: true, reason: 'ok', ip, userAgent });
+  return { ...session, tenant: { slug: u.Slug, name: u.TenantName } };
+}
+
+/** Second step of hospital sign-in. */
+export async function verifyTenantLogin({ challengeId, code }, { ip, userAgent }) {
+  const { subjectId, tenantId } = await consumeChallenge({ subjectType: 'tenant', challengeId, code });
+  return completeTenantLogin(subjectId, tenantId, { ip, userAgent });
 }
 
 export async function platformLogin({ email, password }, { ip, userAgent }) {
@@ -147,27 +221,47 @@ export async function platformLogin({ email, password }, { ip, userAgent }) {
     { email: email.toLowerCase() });
   const valid = await verifyPassword(password, user?.PasswordHash);
   if (user?.LockedUntil && new Date(user.LockedUntil) > new Date()) {
+    await recordLogin({ subjectType: 'platform', userId: user.PlatformUserId, email, success: false, reason: 'locked', ip, userAgent });
     throw new HttpError(429, 'LOCKED', 'Too many failed attempts. Try again in a few minutes.');
   }
   if (!user || !valid || user.Status !== 'active') {
     if (user) await registerFailure('PlatformUsers', 'PlatformUserId', user.PlatformUserId);
+    await recordLogin({ subjectType: 'platform', userId: user?.PlatformUserId ?? null, email, success: false,
+      reason: !user ? 'unknown_user' : !valid ? 'bad_password' : 'disabled', ip, userAgent });
     await audit({ actorType: 'public', action: 'admin.login_failed', metadata: { email: email.toLowerCase() }, ip });
     throw unauthorized('Incorrect e-mail or password.');
   }
+  if (config.superAdminMfa) {
+    const pu = await db.one('SELECT Email, FullName FROM hms.PlatformUsers WHERE PlatformUserId = @id', { id: user.PlatformUserId });
+    return startChallenge({ subjectType: 'platform', subjectId: user.PlatformUserId, email: pu.Email, name: pu.FullName, ip });
+  }
+  return completePlatformLogin(user.PlatformUserId, { ip, userAgent });
+}
+
+async function completePlatformLogin(platformUserId, { ip, userAgent }) {
   await db.exec('UPDATE hms.PlatformUsers SET FailedLoginCount = 0, LockedUntil = NULL, LastLoginAt = SYSUTCDATETIME() WHERE PlatformUserId = @id',
-    { id: user.PlatformUserId });
-  const session = await createSession({ subjectType: 'platform', subjectId: user.PlatformUserId, userAgent, ip });
-  await audit({ actorType: 'platform', actorId: user.PlatformUserId, action: 'admin.login', ip });
+    { id: platformUserId });
+  const session = await createSession({ subjectType: 'platform', subjectId: platformUserId, userAgent, ip });
+  await audit({ actorType: 'platform', actorId: platformUserId, action: 'admin.login', ip });
+  const who = await db.one('SELECT Email FROM hms.PlatformUsers WHERE PlatformUserId = @id', { id: platformUserId });
+  await recordLogin({ subjectType: 'platform', userId: platformUserId, email: who?.Email, success: true, reason: 'ok', ip, userAgent });
   return session;
+}
+
+export async function verifyPlatformLogin({ challengeId, code }, { ip, userAgent }) {
+  const { subjectId } = await consumeChallenge({ subjectType: 'platform', challengeId, code });
+  const ok = await db.one(`SELECT 1 AS ok FROM hms.PlatformUsers WHERE PlatformUserId = @id AND Status = 'active'`, { id: subjectId });
+  if (!ok) throw unauthorized('This account is disabled.');
+  return completePlatformLogin(subjectId, { ip, userAgent });
 }
 
 /**
  * Creates a single-use reset token. Always returns silently (no account enumeration).
- * E-mail delivery is a pending integration: in development the link is printed to the server log.
+ * The link is e-mailed (in EMAIL_PROVIDER=log mode it is printed to the server log in development).
  */
 export async function requestPasswordReset({ email, workspace }, { ip }) {
   const user = await db.one(
-    `SELECT TOP 1 u.UserId, u.TenantId FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
+    `SELECT TOP 1 u.UserId, u.TenantId, u.Email, u.FullName FROM hms.Users u JOIN hms.Tenants t ON t.TenantId = u.TenantId
      WHERE u.Email = @email AND u.Status = 'active' AND (@slug IS NULL OR t.Slug = @slug)`,
     { email: email.toLowerCase(), slug: workspace || null });
   if (!user) return;
@@ -178,8 +272,10 @@ export async function requestPasswordReset({ email, workspace }, { ip }) {
     { id: user.UserId, hash: sha256Hex(token) });
   await audit({ tenantId: user.TenantId, actorType: 'tenant', actorId: user.UserId, action: 'auth.password_reset_requested', ip });
   const link = `${config.publicAppUrl}/reset-password?token=${token}`;
-  if (!config.isProd) console.log(`[dev] Password reset link (e-mail integration pending): ${link}`);
-  // TODO(integration): send `link` via the configured e-mail provider.
+  // Sent in the background so response time does not reveal whether the account exists.
+  deliver({ channel: 'email', to: user.Email, template: 'password_reset', tenantId: user.TenantId, related: { type: 'user', id: user.UserId },
+    content: templates.email.passwordReset({ name: user.FullName, link, minutes: RESET_TTL_MIN }) })
+    .catch((e) => console.error('[auth] reset e-mail failed:', e.message));
 }
 
 export async function resetPassword({ token, password }, { ip }) {
@@ -197,7 +293,7 @@ export async function resetPassword({ token, password }, { ip }) {
     await tx.exec('UPDATE hms.Users SET PasswordHash = @hash, FailedLoginCount = 0, LockedUntil = NULL, UpdatedAt = SYSUTCDATETIME() WHERE UserId = @id',
       { hash, id: row.SubjectId });
     // Sign out everywhere after a reset.
-    await tx.exec(`UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
+    await tx.exec(`/* tenant-safe: user ids are globally unique */ UPDATE hms.UserSessions SET RevokedAt = SYSUTCDATETIME()
                    WHERE SubjectType = 'tenant' AND SubjectId = @id AND RevokedAt IS NULL`, { id: row.SubjectId });
     await audit({ tenantId: u?.TenantId, actorType: 'tenant', actorId: row.SubjectId, action: 'auth.password_reset', ip }, tx);
   });

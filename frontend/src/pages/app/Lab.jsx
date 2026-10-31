@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from 'react';
+import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LuPlus, LuFlaskConical, LuArrowLeft, LuPrinter, LuBadgeCheck, LuSave, LuIndianRupee, LuTestTubes } from 'react-icons/lu';
+import { LuPlus, LuFlaskConical, LuArrowLeft, LuPrinter, LuBadgeCheck, LuSave, LuIndianRupee, LuTestTubes, LuMessageCircle, LuMail, LuBarcode } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -9,6 +9,8 @@ import { age, dateTime, fullName, money, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, DataTable, EmptyState, Input, Modal, PageHeader, Pagination, Select, Skeleton, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
 import { PatientPicker, DoctorSelect } from '../../components/Pickers.jsx';
 import { PaymentModal } from './Billing.jsx';
+import { formatPhone } from '../../lib/contact.js';
+import PhoneInput from '../../components/PhoneInput.jsx';
 
 export const LAB_STATUSES = ['ordered', 'sample_collected', 'completed', 'verified', 'cancelled'];
 export const PAYMENT_STATUSES = ['unpaid', 'partial', 'paid', 'on_bill', 'unbilled', 'cancelled'];
@@ -42,6 +44,7 @@ export function LabOrderModal({ open, onClose, onSaved, preset }) {
   const [payNow, setPayNow] = useState('');
   const [method, setMethod] = useState('cash');
   const [notes, setNotes] = useState('');
+  const [home, setHome] = useState({ on: false, address: '', landmark: '', contactPhone: '', at: '', charge: '' });
   const [filter, setFilter] = useState('');
   const [error, setError] = useState(null);
   const [busy, setBusy] = useState(false);
@@ -58,7 +61,8 @@ export function LabOrderModal({ open, onClose, onSaved, preset }) {
   const inPackages = useMemo(() => new Set(selectedPkgs.flatMap((id) => pkgTests[id] || [])), [selectedPkgs, pkgTests]);
   const shown = (tests || []).filter((t) => !filter || `${t.name} ${t.code} ${t.department || ''}`.toLowerCase().includes(filter.toLowerCase()));
   const grossPaise = (tests || []).filter((t) => selected.includes(t.id)).reduce((a, t) => a + toPaise(t.price), 0)
-    + (packages || []).filter((p) => selectedPkgs.includes(p.id)).reduce((a, p) => a + toPaise(p.price), 0);
+    + (packages || []).filter((p) => selectedPkgs.includes(p.id)).reduce((a, p) => a + toPaise(p.price), 0)
+    + (home.on ? toPaise(home.charge) : 0);
   const discountPaise = Math.min(toPaise(discount), grossPaise);
   const net = (grossPaise - discountPaise) / 100;
   useEffect(() => { if (!fromConsultation) setPayNow(net.toFixed(2)); }, [net, fromConsultation]);
@@ -71,19 +75,26 @@ export function LabOrderModal({ open, onClose, onSaved, preset }) {
     const dup = selected.find((id) => inPackages.has(id));
     if (dup) { setError(`“${tests.find((t) => t.id === dup)?.name}” is already in a selected package. Untick it.`); return; }
     if (toPaise(discount) > grossPaise) { setError('Discount cannot be more than the total.'); return; }
+    if (home.on && (home.address.trim().length < 5 || !home.at)) { setError('For home collection enter the address and the visit time.'); return; }
     setBusy(true);
     try {
       const billed = billable && addToBill;
       const pay = billed && !fromConsultation && Number(payNow) > 0 ? { payment: { amount: Number(payNow), method } } : {};
       const r = await api.post('/lab/orders', {
-        patientId: patient.id, testIds: selected, packageIds: selectedPkgs, priority, discount: discountPaise / 100,
+        patientId: Number(patient.id), testIds: selected.map(Number), packageIds: selectedPkgs.map(Number), priority, discount: discountPaise / 100,
         ...(doctorId ? { doctorId: Number(doctorId) } : {}), ...(referralId ? { referralDoctorId: Number(referralId) } : {}),
-        ...(preset?.consultationId ? { consultationId: preset.consultationId } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}),
+        ...(preset?.consultationId ? { consultationId: Number(preset.consultationId) } : {}), ...(notes.trim() ? { notes: notes.trim() } : {}),
         addToBill: billed, ...pay,
+        ...(home.on ? { homeCollection: { address: home.address.trim(), ...(home.landmark.trim() ? { landmark: home.landmark.trim() } : {}),
+          ...(home.contactPhone ? { contactPhone: home.contactPhone } : {}), scheduledAt: new Date(home.at).toISOString(), charge: Number(home.charge || 0) } } : {}),
       });
       notify.success(`Lab order ${r.data.number} placed${r.data.receipt ? ` · receipt ${r.data.receipt}` : ''}.`);
       onSaved(r.data);
-    } catch (e) { setError(e.message); } finally { setBusy(false); }
+    } catch (e) {
+      // Show which field the server rejected (this modal has no per-field error slots).
+      const details = (e.details || []).map((d) => `${d.path ? `${d.path}: ` : ''}${d.message}`).join(' · ');
+      setError(details ? `${e.message} ${details}` : e.message);
+    } finally { setBusy(false); }
   };
 
   return (
@@ -127,6 +138,19 @@ export function LabOrderModal({ open, onClose, onSaved, preset }) {
           </div>
         </div>
 
+        <div className="sm:col-span-2 rounded-lg border border-line p-3">
+          <label className="flex items-center gap-2 text-sm font-medium"><input type="checkbox" className="accent-forest-800" checked={home.on} onChange={(e) => setHome((h) => ({ ...h, on: e.target.checked }))} />
+            Collect the sample at the patient’s home</label>
+          {home.on && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <Textarea label="Address" required className="sm:col-span-2" rows={2} value={home.address} onChange={(e) => setHome((h) => ({ ...h, address: e.target.value }))} />
+              <Input label="Landmark" value={home.landmark} onChange={(e) => setHome((h) => ({ ...h, landmark: e.target.value }))} />
+              <PhoneInput label="Contact phone at the address" value={home.contactPhone} onChange={(e) => setHome((h) => ({ ...h, contactPhone: e.target.value }))} />
+              <Input label="Visit date & time" required type="datetime-local" value={home.at} onChange={(e) => setHome((h) => ({ ...h, at: e.target.value }))} />
+              <Input label="Home visit charge (₹)" type="number" min="0" step="1" value={home.charge} onChange={(e) => setHome((h) => ({ ...h, charge: e.target.value }))} hint="Added to the order and its invoice" />
+            </div>
+          )}
+        </div>
         <Input label="Discount (₹)" type="number" min="0" step="0.01" value={discount} onChange={(e) => setDiscount(e.target.value)} disabled={fromConsultation}
           hint={fromConsultation ? 'Give discounts on the patient’s bill' : undefined} />
         <div className="rounded-lg bg-ivory p-3 text-sm">
@@ -179,7 +203,7 @@ export default function Lab() {
           columns={[
             { key: 'number', label: 'Order #', render: (o) => <div><p className="whitespace-nowrap font-mono text-xs">{o.number}</p>{o.priority === 'urgent' && <Badge tone="red">Urgent</Badge>}</div> },
             { key: 'orderedAt', label: 'Date', render: (o) => <span className="whitespace-nowrap text-xs">{dateTime(o.orderedAt, tz)}</span> },
-            { key: 'patient', label: 'Patient', render: (o) => <div><p className="font-medium">{fullName(o.patientFirstName, o.patientLastName)}</p><p className="text-xs text-muted">{o.patientNumber}{o.patientPhone ? ` · ${o.patientPhone}` : ''}</p></div> },
+            { key: 'patient', label: 'Patient', render: (o) => <div><p className="font-medium">{fullName(o.patientFirstName, o.patientLastName)}</p><p className="text-xs text-muted">{o.patientNumber}{o.patientPhone ? ` · ${formatPhone(o.patientPhone)}` : ''}</p></div> },
             { key: 'tests', label: 'Tests', render: (o) => <span className="line-clamp-2 max-w-[14rem] text-xs">{o.tests}</span> },
             { key: 'net', label: 'Net', className: 'text-right', render: (o) => money(o.net) },
             { key: 'paid', label: 'Paid', className: 'text-right', render: (o) => (o.paid == null ? '—' : money(o.paid)) },
@@ -203,8 +227,14 @@ export function LabOrderDetail() {
   const [busy, setBusy] = useState(null);
   const [cancelOpen, setCancelOpen] = useState(false);
   const [payOpen, setPayOpen] = useState(false);
+  const [shareNote, setShareNote] = useState(null);
   const [reason, setReason] = useState('');
-  useEffect(() => { if (o) setValues(Object.fromEntries(o.items.map((i) => [i.id, i.resultValue ?? '']))); }, [o]);
+  useEffect(() => {
+    if (!o) return;
+    // Single-value tests are keyed by item id, panel parameters by `p<id>`.
+    setValues(Object.fromEntries(o.items.flatMap((i) => (i.parameters?.length
+      ? i.parameters.map((x) => [`p${x.id}`, x.resultValue ?? '']) : [[i.id, i.resultValue ?? '']]))));
+  }, [o]);
   if (error) return <Alert tone="error">{error.status === 404 ? 'Lab order not found.' : error.message}</Alert>;
   if (loading && !o) return <Skeleton className="h-64 w-full" />;
   const run = async (key, fn, ok) => {
@@ -223,13 +253,25 @@ export function LabOrderDetail() {
         <Link to="/app/laboratory" className="flex items-center gap-1 text-sm font-medium text-forest-700"><LuArrowLeft aria-hidden /> Lab orders</Link>
         <div className="flex flex-wrap gap-2">
           {o.status === 'ordered' && can('lab.write') && <Button onClick={() => run('collect', () => api.post(`/lab/orders/${id}/status`, { status: 'sample_collected' }), 'All samples marked collected.')} loading={busy === 'collect'}><LuTestTubes aria-hidden /> Collect all samples</Button>}
-          {canEnter && <Button variant="outline" loading={busy === 'save'} onClick={() => run('save', () => api.put(`/lab/orders/${id}/results`, { results: o.items.map((i) => ({ itemId: i.id, value: String(values[i.id] ?? '') })) }), 'Results saved.')}><LuSave aria-hidden /> Save results</Button>}
+          {canEnter && <Button variant="outline" loading={busy === 'save'} onClick={() => run('save', () => api.put(`/lab/orders/${id}/results`, {
+            results: o.items.filter((i) => !i.parameters?.length).map((i) => ({ itemId: i.id, value: String(values[i.id] ?? '') })),
+            parameters: o.items.flatMap((i) => (i.parameters || []).map((x) => ({ id: x.id, value: String(values[`p${x.id}`] ?? '') }))),
+          }), 'Results saved.')}><LuSave aria-hidden /> Save results</Button>}
           {o.status === 'completed' && can('lab.verify') && <Button loading={busy === 'verify'} onClick={() => run('verify', () => api.post(`/lab/orders/${id}/verify`), 'Verified. Results are now locked.')}><LuBadgeCheck aria-hidden /> Verify</Button>}
           {canPay && <Button variant="outline" onClick={() => setPayOpen(true)}><LuIndianRupee aria-hidden /> Collect payment</Button>}
           {['ordered', 'sample_collected'].includes(o.status) && can('lab.write') && <Button variant="ghost" onClick={() => setCancelOpen(true)}>Cancel order</Button>}
+          {o.samples.length > 0 && o.status !== 'cancelled' && <Button variant="outline" to={`/app/laboratory/${id}/labels`}><LuBarcode aria-hidden /> Sample labels</Button>}
+          {o.status !== 'cancelled' && can('lab.write') && <>
+            <Button variant="outline" disabled={o.status !== 'verified'} title={o.status !== 'verified' ? 'Verify the results first' : undefined} loading={busy === 'wa'} onClick={() => run('wa', async () => { const r = await api.post(`/lab/orders/${id}/share`, { channel: 'whatsapp' }); setShareNote(r.data); }, 'Report link sent on WhatsApp.')}><LuMessageCircle aria-hidden /> Send on WhatsApp</Button>
+            <Button variant="outline" disabled={o.status !== 'verified'} title={o.status !== 'verified' ? 'Verify the results first' : undefined} loading={busy === 'em'} onClick={() => run('em', async () => { const r = await api.post(`/lab/orders/${id}/share`, { channel: 'email' }); setShareNote(r.data); }, 'Report link sent by e-mail.')}><LuMail aria-hidden /> Send by e-mail</Button>
+          </>}
           <Button variant="outline" onClick={() => window.print()}><LuPrinter aria-hidden /> Print report</Button>
         </div>
       </div>
+      {shareNote && <Alert tone={shareNote.status === 'logged' ? 'warning' : 'success'} className="mb-4 print:hidden">
+        Secure link sent to {shareNote.sentTo}. The patient opens it and enters a one-time code to download the report.
+        {shareNote.status === 'logged' && ' (Messaging is in test mode on this server: the message was written to the server log instead of being delivered.)'}
+      </Alert>}
 
       {/* Printed letterhead */}
       <div className="mb-4 hidden print:block">
@@ -251,6 +293,7 @@ export function LabOrderDetail() {
           {o.verifiedAt && <span className="text-xs text-muted">Verified by {o.verifiedBy} · {dateTime(o.verifiedAt, tz)}</span>}</div>
         {o.status === 'ordered' && <Alert tone="info" className="mb-4">Collect the samples (below or under Samples) before entering results.</Alert>}
         {o.status === 'completed' && <Alert tone="warning" className="mb-4">Results entered — awaiting verification. Unverified results should not be released to the patient.</Alert>}
+        {['sample_collected', 'completed'].includes(o.status) && can('lab.write') && <p className="mb-4 text-xs text-muted">“Send by e-mail / WhatsApp” becomes available after the results are <strong>verified</strong>.</p>}
         {o.status === 'cancelled' && <Alert tone="error" className="mb-4">Cancelled: {o.cancelReason}{o.bill?.own && o.bill.status === 'finalized' ? ' — remember to refund/cancel its invoice under Billing.' : ''}</Alert>}
 
         <div className="mb-4 grid gap-4 lg:grid-cols-3">
@@ -271,6 +314,14 @@ export function LabOrderDetail() {
             <p>{o.referral ? <>{o.referral.name}{o.referral.clinic && <span className="text-muted"> · {o.referral.clinic}</span>}</> : 'Self / walk-in'}</p>
             {o.doctorName && <p className="mt-1 text-muted">Hospital doctor: {o.doctorName}</p>}
             {o.notes && <p className="mt-2 text-muted">Note: {o.notes}</p>}
+            {o.homeCollection && (
+              <div className="mt-3 rounded-lg bg-forest-50 p-2">
+                <p className="flex items-center justify-between font-semibold">Home collection <StatusBadge status={o.homeCollection.status} /></p>
+                <p className="text-muted">{dateTime(o.homeCollection.scheduledAt, tz)}{o.homeCollection.collectorName ? ` · ${o.homeCollection.collectorName}` : ''}</p>
+                <p className="text-muted">{o.homeCollection.address}</p>
+                <Link to="/app/home-collections" className="text-xs font-semibold text-forest-700 underline">Manage visits</Link>
+              </div>
+            )}
           </Card>
           <Card className="p-4 text-sm">
             <p className="mb-2 font-semibold">Samples</p>
@@ -298,7 +349,22 @@ export function LabOrderDetail() {
             {Object.entries(groups).map(([group, items]) => (
               <tbody key={group} className="divide-y divide-line">
                 <tr><td colSpan={5} className="bg-ivory text-xs font-bold uppercase tracking-wider text-forest-800">{group}</td></tr>
-                {items.map((i) => (
+                {items.map((i) => (i.parameters?.length ? (
+                  <Fragment key={i.id}>
+                    <tr><td colSpan={4} className="font-semibold">{i.testName}</td><td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : ''}</td></tr>
+                    {i.parameters.map((x) => (
+                      <tr key={`p${x.id}`}>
+                        <td className="pl-8 text-sm">{x.name}</td>
+                        <td className="min-w-36">{canEnter
+                          ? <input className="input print:hidden" value={values[`p${x.id}`] ?? ''} onChange={(e) => setValues((st) => ({ ...st, [`p${x.id}`]: e.target.value }))} aria-label={`${i.testName}: ${x.name}`} />
+                          : <span className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(x.flag) && 'text-red-700')}>{x.resultValue ?? '—'}</span>}</td>
+                        <td>{x.unit ?? ''}</td>
+                        <td className="text-xs">{x.refLow != null || x.refHigh != null ? `${x.refLow ?? ''} – ${x.refHigh ?? ''}` : x.refText ?? '—'}</td>
+                        <td>{x.flag ? <Badge tone={FLAG_TONE[x.flag]}>{x.flag}</Badge> : '—'}</td>
+                      </tr>
+                    ))}
+                  </Fragment>
+                ) : (
                   <tr key={i.id}>
                     <td className="font-medium">{i.testName}</td>
                     <td className="min-w-36">{canEnter
@@ -308,7 +374,7 @@ export function LabOrderDetail() {
                     <td className="text-xs">{i.refLow != null || i.refHigh != null ? `${i.refLow ?? ''} – ${i.refHigh ?? ''}` : i.refText ?? '—'}</td>
                     <td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : '—'}</td>
                   </tr>
-                ))}
+                )))}
               </tbody>
             ))}
           </table>

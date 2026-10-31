@@ -8,7 +8,8 @@ import { db, withTransaction, t } from '../../db/pool.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
-import { localDayRangeUtc } from '../../utils/time.js';
+import { localDayRangeUtc, localDateString } from '../../utils/time.js';
+import { followUpBucket } from '../clinical/phase2.logic.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
 import { addBillItem, getOrCreateDraftBill } from '../billing/billing.service.js';
 
@@ -44,7 +45,7 @@ router.get('/consultations', requirePermission('opd.read'), asyncHandler(async (
 }));
 
 router.post('/consultations', requirePermission('opd.write'),
-  validate(z.object({ patientId: z.number().int().positive(), doctorId: z.number().int().positive(), appointmentId: z.number().int().positive().nullable().optional() }).strict()),
+  validate(z.object({ patientId: z.coerce.number().int().positive(), doctorId: z.coerce.number().int().positive(), appointmentId: z.coerce.number().int().positive().nullable().optional() }).strict()),
   asyncHandler(async (req, res) => {
     const b = req.body;
     const row = await withTransaction(async (tx) => {
@@ -200,5 +201,117 @@ router.post('/consultations/:id/finalize', requirePermission('opd.write'),
     });
     res.json({ data: { ok: true, billId: result.billId } });
   }));
+
+// ---------- Prescription templates ("sets") ----------
+// A template is either shared (doctorId null) or belongs to one doctor. Applying one fills the prescription,
+// diagnosis and advice on the screen — the doctor still reviews and saves the consultation.
+const templateSchema = z.object({
+  name: z.string().trim().min(2).max(100),
+  doctorId: z.coerce.number().int().positive().nullable().optional(),
+  diagnosis: optText(1000), advice: optText(2000), isActive: z.boolean().optional(),
+  items: z.array(z.object({
+    medicineName: z.string().trim().min(1).max(200), dosage: optText(100), frequency: optText(100),
+    durationDays: optNum(1, 3650), instructions: optText(300),
+  }).strict()).min(1, 'Add at least one medicine.').max(50),
+}).strict();
+
+async function assertDoctor(runner, tenantId, doctorId) {
+  if (!doctorId) return;
+  const d = await runner.one(`SELECT StaffId FROM hms.StaffMembers WHERE TenantId = @tid AND StaffId = @id AND StaffType = 'doctor'`, { tid: tenantId, id: doctorId });
+  if (!d) throw badRequest('Doctor not found.');
+}
+
+async function writeTemplateItems(tx, tenantId, templateId, items) {
+  await tx.exec('DELETE FROM hms.PrescriptionTemplateItems WHERE TenantId = @tid AND TemplateId = @id', { tid: tenantId, id: templateId });
+  let i = 0;
+  for (const p of items) {
+    await tx.exec(`INSERT INTO hms.PrescriptionTemplateItems (TenantId, TemplateId, MedicineName, Dosage, Frequency, DurationDays, Instructions, SortOrder)
+                   VALUES (@tid, @id, @m, @d, @f, @dur, @ins, @s)`,
+    { tid: tenantId, id: templateId, m: p.medicineName, d: p.dosage ?? null, f: p.frequency ?? null, dur: p.durationDays ?? null, ins: p.instructions ?? null, s: (i += 1) });
+  }
+}
+
+router.get('/templates', requirePermission('opd.read'), asyncHandler(async (req, res) => {
+  const doctorId = req.query.doctorId ? idParam(req.query.doctorId, 'doctorId') : null;
+  const [rows, items] = await db.many(`
+    SELECT t.TemplateId AS id, t.Name AS name, t.DoctorId AS doctorId, s.FullName AS doctorName, t.Diagnosis AS diagnosis, t.Advice AS advice,
+           t.IsActive AS isActive, t.UpdatedAt AS updatedAt
+    FROM hms.PrescriptionTemplates t LEFT JOIN hms.StaffMembers s ON s.TenantId = t.TenantId AND s.StaffId = t.DoctorId
+    WHERE t.TenantId = @tid AND (@all = 1 OR t.IsActive = 1) AND (@doc IS NULL OR t.DoctorId IS NULL OR t.DoctorId = @doc)
+    ORDER BY t.Name;
+    SELECT TemplateId AS templateId, MedicineName AS medicineName, Dosage AS dosage, Frequency AS frequency, DurationDays AS durationDays, Instructions AS instructions
+    FROM hms.PrescriptionTemplateItems WHERE TenantId = @tid ORDER BY TemplateId, SortOrder;`,
+  { tid: req.ctx.tenantId, all: req.query.all === 'true', doc: doctorId });
+  res.json({ data: rows.map((r) => ({ ...r, items: items.filter((i) => i.templateId === r.id).map(({ templateId, ...x }) => x) })) });
+}));
+
+router.post('/templates', requirePermission('opd.write'), validate(templateSchema), asyncHandler(async (req, res) => {
+  const b = req.body;
+  const id = await withTransaction(async (tx) => {
+    await assertDoctor(tx, req.ctx.tenantId, b.doctorId);
+    const dup = await tx.one('SELECT TemplateId FROM hms.PrescriptionTemplates WHERE TenantId = @tid AND Name = @n AND ((@doc IS NULL AND DoctorId IS NULL) OR DoctorId = @doc)',
+      { tid: req.ctx.tenantId, n: b.name, doc: b.doctorId ?? null });
+    if (dup) throw conflict('A template with this name already exists.', 'DUPLICATE');
+    const r = await tx.one(`INSERT INTO hms.PrescriptionTemplates (TenantId, Name, DoctorId, Diagnosis, Advice, CreatedByUserId)
+                            OUTPUT INSERTED.TemplateId VALUES (@tid, @n, @doc, @dx, @adv, @uid)`,
+    { tid: req.ctx.tenantId, n: b.name, doc: b.doctorId ?? null, dx: b.diagnosis ?? null, adv: b.advice ?? null, uid: req.ctx.userId });
+    await writeTemplateItems(tx, req.ctx.tenantId, r.TemplateId, b.items);
+    await auditTenant(req, 'rx_template.created', 'rx_template', r.TemplateId, { name: b.name }, tx);
+    return r.TemplateId;
+  });
+  res.status(201).json({ data: { id } });
+}));
+
+router.put('/templates/:id', requirePermission('opd.write'), validate(templateSchema), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  const b = req.body;
+  await withTransaction(async (tx) => {
+    await assertDoctor(tx, req.ctx.tenantId, b.doctorId);
+    const n = await tx.exec(`UPDATE hms.PrescriptionTemplates SET Name = @n, DoctorId = @doc, Diagnosis = @dx, Advice = @adv, IsActive = COALESCE(@active, IsActive), UpdatedAt = SYSUTCDATETIME()
+                             WHERE TenantId = @tid AND TemplateId = @id`,
+    { tid: req.ctx.tenantId, id, n: b.name, doc: b.doctorId ?? null, dx: b.diagnosis ?? null, adv: b.advice ?? null, active: b.isActive ?? null });
+    if (!n) throw notFound('Template not found.');
+    await writeTemplateItems(tx, req.ctx.tenantId, id, b.items);
+    await auditTenant(req, 'rx_template.updated', 'rx_template', id, { name: b.name }, tx);
+  });
+  res.json({ data: { ok: true } });
+}));
+
+router.delete('/templates/:id', requirePermission('opd.write'), asyncHandler(async (req, res) => {
+  const id = idParam(req.params.id);
+  await withTransaction(async (tx) => {
+    await tx.exec('DELETE FROM hms.PrescriptionTemplateItems WHERE TenantId = @tid AND TemplateId = @id', { tid: req.ctx.tenantId, id });
+    const n = await tx.exec('DELETE FROM hms.PrescriptionTemplates WHERE TenantId = @tid AND TemplateId = @id', { tid: req.ctx.tenantId, id });
+    if (!n) throw notFound('Template not found.');
+    await auditTenant(req, 'rx_template.deleted', 'rx_template', id, null, tx);
+  });
+  res.json({ data: { ok: true } });
+}));
+
+// ---------- Follow-ups ----------
+// A follow-up is "open" until the patient has a later consultation or a booked/attended appointment on or after
+// the consultation date. Nothing extra is stored — the list is always computed from the records themselves.
+router.get('/follow-ups', requirePermission('opd.read'), asyncHandler(async (req, res) => {
+  const today = localDateString(req.ctx.timezone);
+  const view = ['overdue', 'today', 'week', 'all'].includes(req.query.view) ? req.query.view : 'week';
+  const doctorId = req.query.doctorId ? idParam(req.query.doctorId, 'doctorId') : null;
+  const rows = await db.query(`
+    SELECT TOP 500 c.ConsultationId AS consultationId, c.ConsultationNumber AS consultationNumber, CONVERT(CHAR(10), c.FollowUpDate, 23) AS followUpDate,
+           c.Diagnosis AS diagnosis, c.FinalizedAt AS seenAt, p.PatientId AS patientId, p.PatientNumber AS patientNumber, p.FirstName AS patientFirstName,
+           p.LastName AS patientLastName, p.Phone AS phone, s.StaffId AS doctorId, s.FullName AS doctorName
+    FROM hms.Consultations c
+    JOIN hms.Patients p ON p.TenantId = c.TenantId AND p.PatientId = c.PatientId
+    JOIN hms.StaffMembers s ON s.TenantId = c.TenantId AND s.StaffId = c.DoctorId
+    WHERE c.TenantId = @tid AND c.Status = 'final' AND c.FollowUpDate IS NOT NULL AND p.IsArchived = 0
+      AND (@doc IS NULL OR c.DoctorId = @doc)
+      AND (@view = 'all' OR (@view = 'overdue' AND c.FollowUpDate < @today) OR (@view = 'today' AND c.FollowUpDate = @today)
+           OR (@view = 'week' AND c.FollowUpDate BETWEEN DATEADD(DAY, -30, @today) AND DATEADD(DAY, 7, @today)))
+      AND NOT EXISTS (SELECT 1 FROM hms.Consultations c2 WHERE c2.TenantId = c.TenantId AND c2.PatientId = c.PatientId AND c2.CreatedAt > c.CreatedAt)
+      AND NOT EXISTS (SELECT 1 FROM hms.Appointments a WHERE a.TenantId = c.TenantId AND a.PatientId = c.PatientId
+                       AND a.StartAt > c.CreatedAt AND a.Status IN ('scheduled', 'checked_in', 'completed'))
+    ORDER BY c.FollowUpDate`,
+  { tid: req.ctx.tenantId, today: t.date(new Date(`${today}T00:00:00Z`)), view, doc: doctorId });
+  res.json({ data: rows.map((r) => ({ ...r, bucket: followUpBucket(r.followUpDate, today) })), meta: { today } });
+}));
 
 export default router;

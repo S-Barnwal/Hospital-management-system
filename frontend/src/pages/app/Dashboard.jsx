@@ -46,6 +46,11 @@ export default function Dashboard() {
 
       {error && <Alert tone="error" className="mb-6">{error.message}</Alert>}
       {data?.alerts?.map((a) => <Alert key={a.message} tone={a.level === 'danger' ? 'error' : a.level} className="mb-4">{a.message}</Alert>)}
+      {!me.tenant.hasLocation && can('settings.manage') && (
+        <Alert tone="info" className="mb-4" title="Add your hospital’s location">
+          Put a pin on the map so patients get correct directions and our team knows where you are. <Link to="/app/settings#location" className="font-semibold underline">Add location</Link>
+        </Alert>
+      )}
 
       <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
         <StatCard label="Registered patients" icon={LuUsers} loading={loading} value={fmt(w?.totalPatients)} unavailable={w && w.totalPatients === null}

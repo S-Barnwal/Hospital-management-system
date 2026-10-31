@@ -5,6 +5,7 @@ import Logo from '../components/Logo.jsx';
 import { Button, cx } from '../components/ui.jsx';
 import { api } from '../lib/api.js';
 import { BRAND } from '../lib/format.js';
+import FreeBanner from '../components/FreeBanner.jsx';
 
 const NAV = [
   { to: '/', label: 'Home', end: true },
@@ -20,6 +21,7 @@ export default function PublicLayout() {
   const [open, setOpen] = useState(false);
   const [scrolled, setScrolled] = useState(false);
   const [site, setSite] = useState({});
+  const [plans, setPlans] = useState(null);
   const { pathname } = useLocation();
 
   useEffect(() => { setOpen(false); window.scrollTo(0, 0); }, [pathname]);
@@ -30,10 +32,12 @@ export default function PublicLayout() {
     return () => window.removeEventListener('scroll', onScroll);
   }, []);
   useEffect(() => { api.get('/site-settings').then((r) => setSite(r.data || {})).catch(() => {}); }, []);
+  useEffect(() => { api.get('/plans').then((r) => setPlans(r.data || [])).catch(() => {}); }, []);
 
   return (
     <div className="flex min-h-screen flex-col">
       <a href="#main" className="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded focus:bg-white focus:px-3 focus:py-2">Skip to content</a>
+      <FreeBanner plans={plans} />
       <header className={cx('sticky top-0 z-40 transition', scrolled ? 'border-b border-line bg-ivory/90 backdrop-blur' : 'bg-ivory')}>
         <div className="container-page flex h-16 items-center justify-between gap-6">
           <Logo />

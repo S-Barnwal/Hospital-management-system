@@ -9,6 +9,8 @@ import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
 import { STAFF_TYPES } from '../../utils/constants.js';
+import { optionalPhone, optionalEmail } from '../../utils/contact.js';
+import hrRoutes from '../hr/hr.routes.js';
 
 const router = Router();
 router.use(requireTenant);
@@ -55,7 +57,7 @@ router.delete('/departments/:id', requirePermission('departments.manage'), async
 }));
 
 // ---------- Staff & doctors ----------
-const STAFF_COLS = `s.StaffId AS id, s.StaffType AS staffType, s.FullName AS fullName, s.Designation AS designation, s.Specialization AS specialization,
+const STAFF_COLS = `s.StaffId AS id, s.StaffType AS staffType, s.FullName AS fullName, s.Designation AS designation, s.Specialization AS specialization, s.Room AS room,
   s.RegistrationNumber AS registrationNumber, s.Phone AS phone, s.Email AS email, s.ConsultationFee AS consultationFee, s.IsActive AS isActive,
   s.DepartmentId AS departmentId, d.Name AS departmentName, s.UserId AS userId, s.CreatedAt AS createdAt`;
 
@@ -81,13 +83,14 @@ router.get('/staff', requirePermission('staff.read'), asyncHandler(async (req, r
 const staffSchema = z.object({
   staffType: z.enum(STAFF_TYPES),
   fullName: z.string().trim().min(2).max(150),
-  departmentId: z.number().int().positive().nullable().optional(),
+  departmentId: z.coerce.number().int().positive().nullable().optional(),
   designation: opt(z.string().trim().max(100)),
   specialization: opt(z.string().trim().max(150)),
   registrationNumber: opt(z.string().trim().max(60)),
-  phone: opt(z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, 'Enter a valid phone number')),
-  email: opt(z.string().trim().toLowerCase().email().max(254)),
+  phone: optionalPhone,
+  email: optionalEmail,
   consultationFee: z.number().min(0).max(1e7).nullable().optional(),
+  room: opt(z.string().trim().max(30)),
   isActive: z.boolean().optional(),
 }).strict();
 
@@ -101,10 +104,10 @@ router.post('/staff', requirePermission('staff.write'), validate(staffSchema), a
   const b = req.body;
   await assertDepartment(db, req.ctx.tenantId, b.departmentId);
   const row = await db.one(`
-    INSERT INTO hms.StaffMembers (TenantId, StaffType, FullName, DepartmentId, Designation, Specialization, RegistrationNumber, Phone, Email, ConsultationFee)
-    OUTPUT INSERTED.StaffId VALUES (@tid, @type, @name, @dept, @desig, @spec, @reg, @phone, @email, @fee)`,
+    INSERT INTO hms.StaffMembers (TenantId, StaffType, FullName, DepartmentId, Designation, Specialization, RegistrationNumber, Phone, Email, ConsultationFee, Room)
+    OUTPUT INSERTED.StaffId VALUES (@tid, @type, @name, @dept, @desig, @spec, @reg, @phone, @email, @fee, @room)`,
   { tid: req.ctx.tenantId, type: b.staffType, name: b.fullName, dept: b.departmentId ?? null, desig: b.designation ?? null, spec: b.specialization ?? null,
-    reg: b.registrationNumber ?? null, phone: b.phone ?? null, email: b.email ?? null, fee: b.consultationFee == null ? null : t.money(b.consultationFee) });
+    reg: b.registrationNumber ?? null, phone: b.phone ?? null, email: b.email ?? null, fee: b.consultationFee == null ? null : t.money(b.consultationFee), room: b.room ?? null });
   await auditTenant(req, 'staff.created', 'staff', row.StaffId, { staffType: b.staffType });
   res.status(201).json({ data: { id: row.StaffId } });
 }));
@@ -130,10 +133,10 @@ router.patch('/staff/:id', requirePermission('staff.write'), validate(staffSchem
     await assertDepartment(tx, req.ctx.tenantId, m.departmentId);
     await tx.exec(`
       UPDATE hms.StaffMembers SET StaffType = @type, FullName = @name, DepartmentId = @dept, Designation = @desig, Specialization = @spec,
-        RegistrationNumber = @reg, Phone = @phone, Email = @email, ConsultationFee = @fee, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
+        RegistrationNumber = @reg, Phone = @phone, Email = @email, ConsultationFee = @fee, Room = @room, IsActive = @active, UpdatedAt = SYSUTCDATETIME()
       WHERE TenantId = @tid AND StaffId = @id`,
     { tid: req.ctx.tenantId, id, type: m.staffType, name: m.fullName, dept: m.departmentId ?? null, desig: m.designation ?? null, spec: m.specialization ?? null,
-      reg: m.registrationNumber ?? null, phone: m.phone ?? null, email: m.email ?? null, fee: m.consultationFee == null ? null : t.money(m.consultationFee), active: Boolean(m.isActive) });
+      reg: m.registrationNumber ?? null, phone: m.phone ?? null, email: m.email ?? null, fee: m.consultationFee == null ? null : t.money(m.consultationFee), room: m.room ?? null, active: Boolean(m.isActive) });
     await auditTenant(req, 'staff.updated', 'staff', id, { fields: Object.keys(req.body).join(',') }, tx);
   });
   res.json({ data: { ok: true } });
@@ -187,5 +190,8 @@ router.put('/staff/:id/schedule', requirePermission('staff.write'),
     });
     res.json({ data: { ok: true } });
   }));
+
+// Phase 3: attendance, leave and payroll.
+router.use(hrRoutes);
 
 export default router;

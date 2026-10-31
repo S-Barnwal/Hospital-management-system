@@ -10,8 +10,21 @@ import { csrfGuard } from './middleware/csrf.js';
 import { errorHandler, notFoundHandler } from './middleware/errorHandler.js';
 import authRoutes from './modules/auth/auth.routes.js';
 import publicRoutes from './modules/public/public.routes.js';
+import geoRoutes from './modules/geo/geo.routes.js';
+import attachmentRoutes from './modules/attachments/attachments.routes.js';
+import ipdCareRoutes from './modules/ipd/care.routes.js';
+import cashRoutes from './modules/billing/cash.routes.js';
+import payLinkRoutes from './modules/billing/payLink.public.routes.js';
+import invoiceRoutes from './modules/invoices/invoices.routes.js';
 import onboardingRoutes, { webhookHandler } from './modules/onboarding/onboarding.routes.js';
 import adminRoutes from './modules/admin/admin.routes.js';
+import queueRoutes from './modules/queue/queue.routes.js';
+import displayRoutes from './modules/queue/display.public.routes.js';
+import bookingRoutes from './modules/booking/booking.routes.js';
+import bookingPublicRoutes from './modules/booking/booking.public.routes.js';
+import supportRoutes from './modules/support/support.routes.js';
+import branchRoutes from './modules/branches/branches.routes.js';
+import { countRequest } from './utils/metrics.js';
 import tenantRoutes from './modules/tenant/tenant.routes.js';
 import dashboardRoutes from './modules/dashboard/dashboard.routes.js';
 import patientRoutes from './modules/patients/patients.routes.js';
@@ -27,6 +40,8 @@ import reportRoutes from './modules/reports/reports.routes.js';
 import expenseRoutes from './modules/expenses/expenses.routes.js';
 import analyticsRoutes from './modules/analytics/analytics.routes.js';
 import backupRoutes from './modules/backups/backups.routes.js';
+import reportShareRoutes from './modules/lab/reportShare.routes.js';
+import messagingSettingsRoutes from './modules/tenant/messagingSettings.routes.js';
 
 /** Allows the configured origins plus any tenant subdomain of APP_BASE_DOMAIN over https (or http on localhost). */
 export function makeOriginCheck(cfg) {
@@ -57,6 +72,7 @@ export function createApp() {
     res.on('finish', () => {
       // Structured access log. Never logs bodies (they may hold patient data or passwords).
       console.log(JSON.stringify({ level: 'info', requestId: req.id, method: req.method, path: req.path, status: res.statusCode, ms: Date.now() - started }));
+      countRequest(res.statusCode);
     });
     next();
   });
@@ -78,6 +94,8 @@ export function createApp() {
   // Webhooks need the raw body for signature verification — mount BEFORE express.json().
   app.post('/api/v1/billing/webhooks/:provider', express.raw({ type: 'application/json', limit: '256kb' }), webhookHandler);
 
+  // File uploads arrive as raw bytes (≤ 5 MB) — parsed only on this one route, before the JSON parser.
+  app.post('/api/v1/attachments', express.raw({ type: () => true, limit: '5mb' }));
   app.use(express.json({ limit: '200kb' }));
   app.use(cookieParser());
   app.use(resolveHostTenant);
@@ -96,6 +114,7 @@ export function createApp() {
   const v1 = express.Router();
   v1.use('/auth', authRoutes);
   v1.use('/onboarding', onboardingRoutes);
+  v1.use('/admin/invoices', invoiceRoutes);
   v1.use('/admin', adminRoutes);
   v1.use('/dashboard', dashboardRoutes);
   v1.use('/patients', patientRoutes);
@@ -104,13 +123,26 @@ export function createApp() {
   v1.use('/users', userRoutes);
   v1.use('/opd', opdRoutes);
   v1.use('/ipd', ipdRoutes);
+  v1.use('/ipd', ipdCareRoutes);
   v1.use('/billing', billingRoutes);
+  v1.use('/billing', cashRoutes);
+  v1.use('/public/pay', payLinkRoutes);
   v1.use('/lab', labRoutes);
   v1.use('/pharmacy', pharmacyRoutes);
   v1.use('/reports', reportRoutes);
   v1.use('/expenses', expenseRoutes);
   v1.use('/analytics', analyticsRoutes);
   v1.use('/backups', backupRoutes);
+  v1.use('/public/reports', reportShareRoutes);
+  v1.use('/settings/messaging', messagingSettingsRoutes);
+  v1.use('/geo', geoRoutes);
+  v1.use('/attachments', attachmentRoutes);
+  v1.use('/queue', queueRoutes);
+  v1.use('/public/display', displayRoutes);
+  v1.use('/booking', bookingRoutes);
+  v1.use('/public/booking', bookingPublicRoutes);
+  v1.use('/support', supportRoutes);
+  v1.use('/branches', branchRoutes);
   v1.use('/', publicRoutes);
   v1.use('/', tenantRoutes);
   app.use('/api/v1', v1);

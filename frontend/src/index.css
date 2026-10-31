@@ -25,6 +25,7 @@
   --color-gold-50: #fbf6e9;
   --color-gold-100: #f5ebcf;
   --color-gold-200: #ead69d;
+  --color-gold-300: #e2c985;
   --color-gold-400: #d9bc6e;
   --color-gold-500: #c8a24a;
   --color-gold-600: #a8842b; /* gold text on white — passes AA for large text */
@@ -69,4 +70,11 @@
     background-image: radial-gradient(rgb(200 162 74 / 0.08) 1px, transparent 1px);
     background-size: 18px 18px;
   }
+}
+
+/* Token slip: print only the slip (58/80 mm thermal printers), not the page behind the dialog. */
+@media print {
+  body.printing-slip * { visibility: hidden !important; }
+  body.printing-slip .token-slip, body.printing-slip .token-slip * { visibility: visible !important; }
+  body.printing-slip .token-slip { position: fixed; left: 0; top: 0; width: 72mm; border: 0; }
 }

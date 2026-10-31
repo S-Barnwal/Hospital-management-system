@@ -46,12 +46,32 @@ async function request(method, path, body, { retry = true } = {}) {
   return json;
 }
 
+/** Uploads one file as raw bytes (the server checks its real type and size). */
+async function upload(path, file) {
+  let res;
+  try {
+    res = await fetch(`${BASE}${path}`, { method: 'POST', credentials: 'include', headers: { 'Content-Type': file.type || 'application/octet-stream', 'X-Requested-With': 'fetch' }, body: file });
+  } catch {
+    throw new ApiError(0, 'NETWORK', 'Cannot reach the server. Check your connection.');
+  }
+  const json = await res.json().catch(() => null);
+  if (!res.ok) {
+    const e = json?.error || {};
+    throw new ApiError(res.status, e.code || 'ERROR', res.status === 413 ? 'The file is larger than 5 MB.' : (e.message || `Upload failed (${res.status})`), e.details);
+  }
+  return json;
+}
+
+/** URL of a stored file (served after the same permission checks as its record). */
+export const fileUrl = (id, download = false) => `${BASE}/attachments/${id}/file${download ? '?download=1' : ''}`;
+
 export const api = {
   get: (p) => request('GET', p),
   post: (p, b = {}) => request('POST', p, b),
   put: (p, b = {}) => request('PUT', p, b),
   patch: (p, b = {}) => request('PATCH', p, b),
   del: (p) => request('DELETE', p),
+  upload,
 };
 
 /** Builds a query string, skipping empty values. */

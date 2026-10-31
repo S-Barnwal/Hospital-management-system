@@ -11,7 +11,7 @@ import { normaliseSlug } from '../../utils/slug.js';
 import { audit } from '../../utils/audit.js';
 import { createSession, setAuthCookies } from '../auth/auth.service.js';
 import {
-  isSlugAvailable, startCheckout, finalizePaidOrder, markOrderFailed, getOnboardingStatus,
+  isSlugAvailable, startCheckout, finalizePaidOrder, markOrderFailed, getOnboardingStatus, previewCoupon,
   recordWebhookEvent, completeWebhookEvent,
 } from './onboarding.service.js';
 
@@ -19,29 +19,45 @@ const router = Router();
 const checkoutLimiter = rateLimit({ windowMs: 15 * 60 * 1000, limit: 15, standardHeaders: 'draft-7', legacyHeaders: false });
 
 import { FACILITY_TYPES } from '../../utils/constants.js';
+import { phoneSchema, emailSchema, withLocation } from '../../utils/contact.js';
 
-const checkoutSchema = z.object({
+const checkoutSchema = withLocation(z.object({
   planCode: z.string().trim().min(1).max(50),
   interval: z.enum(['monthly', 'annual']),
   orgName: z.string().trim().min(2).max(200),
   slug: z.string().trim().transform(normaliseSlug),
   facilityType: z.enum(FACILITY_TYPES).optional(),
-  city: z.string().trim().max(100).optional(),
-  phone: z.string().trim().regex(/^[+\d][\d\s-]{6,19}$/, 'Enter a valid phone number'),
+  phone: phoneSchema,
   ownerName: z.string().trim().min(2).max(150),
-  ownerEmail: z.string().trim().toLowerCase().email().max(254),
+  ownerEmail: emailSchema,
   password: z.string().min(1, 'Choose a password (10+ characters with letters and numbers).').max(128),
   acceptTerms: z.literal(true, { errorMap: () => ({ message: 'You must accept the terms.' }) }),
-}).strict();
+  couponCode: z.string().trim().max(30).optional(),
+  trial: z.boolean().optional(),   // start the plan's free trial instead of paying now
+}).strict(), { required: true });
 
 router.get('/slug-availability', asyncHandler(async (req, res) => {
   const slug = normaliseSlug(req.query.slug);
   res.json({ data: { slug, ...(await isSlugAvailable(slug)) } });
 }));
 
+/** Price preview for a coupon on the sign-up page (no side effects). */
+router.post('/coupon-preview', checkoutLimiter,
+  validate(z.object({ planCode: z.string().trim().min(1).max(50), interval: z.enum(['monthly', 'annual']), couponCode: z.string().trim().min(1).max(30) }).strict()),
+  asyncHandler(async (req, res) => {
+    res.json({ data: await previewCoupon(req.body) });
+  }));
+
 router.post('/checkout', checkoutLimiter, validate(checkoutSchema), asyncHandler(async (req, res) => {
   const result = await startCheckout(req.body, { ip: req.ip });
-  res.status(201).json({ data: result });
+  if (result.free || result.trial) {
+    // Free plan / free trial: the workspace already exists — sign the new owner straight in, exactly like after a paid sign-up.
+    const { tenantId, ownerUserId, ...publicResult } = result;
+    const session = await createSession({ subjectType: 'tenant', subjectId: ownerUserId, tenantId, userAgent: req.get('user-agent'), ip: req.ip });
+    setAuthCookies(res, 'tenant', session);
+    return res.status(201).json({ data: publicResult });
+  }
+  return res.status(201).json({ data: result });
 }));
 
 const verifySchema = z.object({

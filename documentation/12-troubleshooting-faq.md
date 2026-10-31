@@ -20,7 +20,17 @@
 | *"This record is used elsewhere, so it cannot be deleted"* | It has history (e.g. a test that was ordered) | Mark it **inactive** instead — history must stay correct |
 | *"… is included twice"* when placing a lab order | A test is selected individually and inside a package | Untick the individual test |
 | *"Payments can only be recorded against a finalised bill"* | The bill is still a draft | Finalise the bill first |
+| *"We could not send your sign-in code"* | 2-step sign-in is on but e-mail sending failed | Fix SMTP ([chapter 15](15-messaging-setup.md)); in an emergency turn the setting off directly in the database or ask the platform admin |
+| Message log shows **logged** instead of **sent** | Messaging is in test mode | Configure `EMAIL_PROVIDER` / `WHATSAPP_PROVIDER` ([chapter 15](15-messaging-setup.md)) |
+| *"Only verified reports can be sent to the patient"* | Report not verified yet | Verify the order first |
 | Port `5000` or `5173` already in use | Another copy is already running | Close the other terminal, or restart the computer |
+
+| TV screen shows numbers but is silent | Browsers only play sound after a tap | Tap the gold bar *“Tap here once to turn on announcements”* (or the speaker icon) once after opening the screen |
+| TV screen says *“This screen link is no longer valid”* | The screen was removed, or the hospital is suspended | Token queue → TV display screens → *Add screen* and open the new link |
+| A doctor is missing on the online booking page | Only active doctors with a weekly schedule are listed | Doctors & staff → the doctor → set the weekly schedule |
+| Online booking page says *not available* | Booking is switched off | Settings → Online booking → tick and Save |
+| *“This coupon …”* when applying a code | Expired, used up, not for this plan/billing/stage, or already used by your hospital | Check the code's rules with the provider; the message says which rule failed |
+| *“A free trial has already been used …”* | One trial per e-mail and phone number | Choose *Buy now*, or sign in to the earlier workspace |
 
 ## FAQ
 
@@ -29,6 +39,12 @@ No. See [chapter 10](10-security-and-privacy.md). Even the Super Admin can't see
 
 **Do we lose data if we don't renew?**
 No. The hospital becomes read-only; data stays and can be downloaded. Renewing unlocks everything.
+
+**We registered while plans were free. What happens when charging starts?**
+You get e-mails first (usually 7 days' notice). Keep working as normal; when the date comes, the owner pays from **Subscription**. Nothing is deleted, and if you don't pay you simply go read-only after the grace days.
+
+**"This e-mail already has a free workspace"**
+Only one free workspace is allowed per owner e-mail. Sign in to the existing one, or use a different owner e-mail for a genuinely separate hospital.
 
 **Can we use it on a phone or tablet?**
 Yes, the screens adapt to small screens. Tables scroll sideways on phones.

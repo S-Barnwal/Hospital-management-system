@@ -7,7 +7,8 @@ import { db, withTransaction, t } from '../../db/pool.js';
 import { parseListQuery, pageMeta } from '../../utils/pagination.js';
 import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
-import { balanceDue } from '../clinical/logic.js';
+import { balanceDue, gstSplit } from '../clinical/logic.js';
+import { GSTIN_RE } from '../../utils/constants.js';
 import { lockBill, addBillItem, recalcBill, finalizeBill, getOrCreateDraftBill, recordBillPayment } from './billing.service.js';
 import { localDayRangeUtc } from '../../utils/time.js';
 
@@ -40,7 +41,7 @@ router.get('/bills', requirePermission('billing.read'), asyncHandler(async (req,
 }));
 
 router.post('/bills', requirePermission('billing.write'),
-  validate(z.object({ patientId: z.number().int().positive(), admissionId: z.number().int().positive().nullable().optional() }).strict()),
+  validate(z.object({ patientId: z.coerce.number().int().positive(), admissionId: z.coerce.number().int().positive().nullable().optional() }).strict()),
   asyncHandler(async (req, res) => {
     const id = await withTransaction(async (tx) => {
       const p = await tx.one('SELECT PatientId FROM hms.Patients WHERE TenantId = @tid AND PatientId = @pid', { tid: req.ctx.tenantId, pid: req.body.patientId });
@@ -56,11 +57,12 @@ router.get('/bills/:id', requirePermission('billing.read'), asyncHandler(async (
   const id = idParam(req.params.id);
   const [bills, items, payments] = await db.many(`
     SELECT b.*, p.PatientNumber, p.FirstName, p.LastName, p.Phone, p.AddressLine, p.City, t.Name AS HospitalName, t.Phone AS HospitalPhone,
-           (SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = b.TenantId AND SettingKey = 'hospital.address') AS HospitalAddress
+           (SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = b.TenantId AND SettingKey = 'hospital.address') AS HospitalAddress,
+           (SELECT SettingValue FROM hms.TenantSettings WHERE TenantId = b.TenantId AND SettingKey = 'gst.gstin') AS HospitalGstin
     FROM hms.Bills b JOIN hms.Patients p ON p.TenantId = b.TenantId AND p.PatientId = b.PatientId JOIN hms.Tenants t ON t.TenantId = b.TenantId
     WHERE b.TenantId = @tid AND b.BillId = @id;
     SELECT BillItemId AS id, ItemType AS itemType, Description AS description, Quantity AS quantity, UnitPrice AS unitPrice,
-           TaxRatePercent AS taxRatePercent, LineSubtotal AS lineSubtotal, LineTax AS lineTax
+           TaxRatePercent AS taxRatePercent, LineSubtotal AS lineSubtotal, LineTax AS lineTax, HsnSac AS hsnSac
     FROM hms.BillItems WHERE TenantId = @tid AND BillId = @id ORDER BY BillItemId;
     SELECT bp.BillPaymentId AS id, bp.ReceiptNumber AS receiptNumber, bp.Kind AS kind, bp.Amount AS amount, bp.Method AS method, bp.Reference AS reference,
            bp.Reason AS reason, bp.ReceivedAt AS receivedAt, u.FullName AS receivedBy
@@ -73,8 +75,9 @@ router.get('/bills/:id', requirePermission('billing.read'), asyncHandler(async (
       id: b.BillId, billNumber: b.BillNumber, status: b.Status, subtotal: b.Subtotal, discount: b.DiscountAmount, tax: b.TaxAmount, total: b.Total,
       paid: b.PaidAmount, balance: balanceDue(b.Total, b.PaidAmount), notes: b.Notes, cancelReason: b.CancelReason, createdAt: b.CreatedAt,
       finalizedAt: b.FinalizedAt, cancelledAt: b.CancelledAt, admissionId: b.AdmissionId,
+      gst: { hospitalGstin: b.HospitalGstin || null, buyerGstin: b.BuyerGstin || null, isInterState: Boolean(b.IsInterState), ...gstSplit(b.TaxAmount, b.IsInterState) },
       patient: { id: b.PatientId, patientNumber: b.PatientNumber, firstName: b.FirstName, lastName: b.LastName, phone: b.Phone, address: [b.AddressLine, b.City].filter(Boolean).join(', ') },
-      hospital: { name: b.HospitalName, phone: b.HospitalPhone, address: b.HospitalAddress },
+      hospital: { name: b.HospitalName, phone: b.HospitalPhone, address: b.HospitalAddress, gstin: b.HospitalGstin || null },
       items, payments,
     },
   });
@@ -84,6 +87,7 @@ router.post('/bills/:id/items', requirePermission('billing.write'),
   validate(z.object({
     itemType: z.enum(ITEM_TYPES), description: z.string().trim().min(2).max(200),
     quantity: z.coerce.number().positive().max(100000), unitPrice: money, taxRatePercent: z.coerce.number().min(0).max(100).default(0),
+    hsnSac: z.string().trim().regex(/^\d{4,8}$/, 'HSN/SAC is 4–8 digits').optional().or(z.literal('').transform(() => undefined)),
   }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
@@ -109,13 +113,19 @@ router.delete('/bills/:id/items/:itemId', requirePermission('billing.write'), as
 }));
 
 router.patch('/bills/:id', requirePermission('billing.write'),
-  validate(z.object({ discountAmount: money.optional(), notes: z.string().trim().max(500).nullable().optional() }).strict()),
+  validate(z.object({
+    discountAmount: money.optional(), notes: z.string().trim().max(500).nullable().optional(),
+    isInterState: z.boolean().optional(),
+    buyerGstin: z.string().trim().toUpperCase().regex(GSTIN_RE, 'Enter a valid 15-character GSTIN').nullable().optional().or(z.literal('').transform(() => null)),
+  }).strict()),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
       const bill = await lockBill(tx, req.ctx.tenantId, id);
       if (bill.Status !== 'draft') throw conflict('Finalised bills are locked.', 'BILL_LOCKED');
       if ('notes' in req.body) await tx.exec('UPDATE hms.Bills SET Notes = @n WHERE TenantId = @tid AND BillId = @id', { tid: req.ctx.tenantId, id, n: req.body.notes });
+      if ('isInterState' in req.body) await tx.exec('UPDATE hms.Bills SET IsInterState = @v WHERE TenantId = @tid AND BillId = @id', { tid: req.ctx.tenantId, id, v: req.body.isInterState });
+      if ('buyerGstin' in req.body) await tx.exec('UPDATE hms.Bills SET BuyerGstin = @v WHERE TenantId = @tid AND BillId = @id', { tid: req.ctx.tenantId, id, v: req.body.buyerGstin });
       if (req.body.discountAmount !== undefined) {
         try { await recalcBill(tx, req.ctx.tenantId, id, req.body.discountAmount.toFixed(2)); } catch (e) { throw badRequest(e.message); }
       }
@@ -181,7 +191,7 @@ router.get('/payments', requirePermission('billing.read'), asyncHandler(async (r
   const q = req.query.q ? `%${String(req.query.q).trim().slice(0, 100).replace(/[%_[\]]/g, (m) => `[${m}]`)}%` : null;
   const params = {
     tid: req.ctx.tenantId, offset: lq.offset, size: lq.pageSize, start, end, q,
-    method: ['cash', 'card', 'upi', 'bank', 'other'].includes(req.query.method) ? req.query.method : null,
+    method: ['cash', 'card', 'upi', 'bank', 'other', 'deposit'].includes(req.query.method) ? req.query.method : null,
     kind: ['payment', 'refund'].includes(req.query.kind) ? req.query.kind : null,
   };
   const from = `FROM hms.BillPayments bp

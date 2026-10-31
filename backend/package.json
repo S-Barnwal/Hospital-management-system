@@ -2,7 +2,7 @@
   "name": "medicore-hms-backend",
   "version": "0.1.0",
   "private": true,
-  "description": "Multi-tenant Hospital Management System SaaS — Express + SQL Server API",
+  "description": "Multi-tenant Hospital Management System SaaS \u2014 Express + SQL Server API",
   "type": "module",
   "main": "src/server.js",
   "engines": {
@@ -15,16 +15,20 @@
     "db:seed": "node --env-file-if-exists=.env src/db/seed.js",
     "db:seed:demo": "node --env-file-if-exists=.env src/db/seed.js --demo",
     "test": "node --test \"tests/unit/**/*.test.js\"",
-    "test:integration": "node --env-file-if-exists=.env.test --test --test-concurrency=1 \"tests/integration/**/*.test.js\""
+    "test:integration": "node --env-file-if-exists=.env.test --test --test-concurrency=1 \"tests/integration/**/*.test.js\"",
+    "test:e2e": "node --env-file-if-exists=.env tests/integration/run-on-dev-db.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
     "cookie-parser": "^1.4.7",
     "cors": "^2.8.5",
+    "country-state-city": "^3.2.1",
     "express": "^4.21.2",
     "express-rate-limit": "^7.5.0",
     "helmet": "^8.0.0",
+    "libphonenumber-js": "^1.11.12",
     "mssql": "^11.0.1",
+    "nodemailer": "^6.9.16",
     "zod": "^3.24.1"
   }
 }

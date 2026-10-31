@@ -125,3 +125,15 @@ export function labPaymentStatus(bill) {
 /** Sample workflow: allowed transitions. */
 const SAMPLE_FLOW = { pending: ['collected'], collected: ['received', 'rejected'], received: ['rejected'], rejected: ['collected'] };
 export const canMoveSample = (from, to) => (SAMPLE_FLOW[from] || []).includes(to);
+
+/**
+ * Splits a bill's GST (in rupees, 2-dp string or number) into CGST + SGST (same state, half each)
+ * or IGST (inter-state). Works in paise so the parts always add up to the total.
+ */
+export function gstSplit(taxAmount, isInterState) {
+  const minor = Math.round(Number(taxAmount || 0) * 100);
+  const f = (m) => (m / 100).toFixed(2);
+  if (isInterState) return { cgst: '0.00', sgst: '0.00', igst: f(minor) };
+  const cgst = Math.floor(minor / 2);
+  return { cgst: f(cgst), sgst: f(minor - cgst), igst: '0.00' };
+}

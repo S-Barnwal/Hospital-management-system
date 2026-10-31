@@ -11,6 +11,7 @@ import { idParam } from '../../utils/params.js';
 import { auditTenant } from '../../utils/audit.js';
 import { localDateString } from '../../utils/time.js';
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
+import recurringRoutes from './recurring.routes.js';
 
 const router = Router();
 router.use(requireTenant, requireFeature('billing'));
@@ -72,7 +73,9 @@ router.get('/', requirePermission('expenses.read'), asyncHandler(async (req, res
     AND (@q IS NULL OR e.ExpenseNumber LIKE @q OR e.PaidTo LIKE @q OR e.Reference LIKE @q OR e.Notes LIKE @q)`;
   const [rows, totals] = await db.many(`
     SELECT e.ExpenseId AS id, e.ExpenseNumber AS number, CONVERT(CHAR(10), e.ExpenseDate, 23) AS expenseDate, e.ExpenseCategoryId AS categoryId, c.Name AS category,
-           e.Amount AS amount, e.Method AS method, e.PaidTo AS paidTo, e.Reference AS reference, e.Notes AS notes, e.CreatedAt AS createdAt, u.FullName AS createdBy
+           e.Amount AS amount, e.Method AS method, e.PaidTo AS paidTo, e.Reference AS reference, e.Notes AS notes, e.CreatedAt AS createdAt, u.FullName AS createdBy,
+           e.RecurringExpenseId AS recurringId, e.PayrollId AS payrollId,
+           (SELECT COUNT(*) FROM hms.Attachments a WHERE a.TenantId = e.TenantId AND a.EntityType = 'expense' AND a.EntityId = e.ExpenseId AND a.IsDeleted = 0) AS attachmentCount
     ${from} ${where} ORDER BY ${lq.orderBy}, e.ExpenseId DESC OFFSET @offset ROWS FETCH NEXT @size ROWS ONLY;
     SELECT COUNT(*) AS total, ISNULL(SUM(e.Amount), 0) AS amount ${from} ${where};`, params);
   res.json({ data: rows, meta: { ...pageMeta(lq, totals[0].total), totalAmount: totals[0].amount } });
@@ -125,12 +128,17 @@ router.put('/:id', requirePermission('expenses.write'), validate(expenseSchema),
 router.delete('/:id', requirePermission('expenses.write'), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   await withTransaction(async (tx) => {
-    const e = await tx.one('SELECT ExpenseNumber, Amount FROM hms.Expenses WHERE TenantId = @tid AND ExpenseId = @id', { tid: req.ctx.tenantId, id });
+    const e = await tx.one('SELECT ExpenseNumber, Amount, PayrollId FROM hms.Expenses WHERE TenantId = @tid AND ExpenseId = @id', { tid: req.ctx.tenantId, id });
     if (!e) throw notFound('Expense not found.');
+    if (e.PayrollId) throw conflict('This expense is a paid salary from Payroll and cannot be deleted here.', 'IN_USE');
+    await tx.exec(`UPDATE hms.Attachments SET IsDeleted = 1 WHERE TenantId = @tid AND EntityType = 'expense' AND EntityId = @id`, { tid: req.ctx.tenantId, id });
     await tx.exec('DELETE FROM hms.Expenses WHERE TenantId = @tid AND ExpenseId = @id', { tid: req.ctx.tenantId, id });
     await auditTenant(req, 'expense.deleted', 'expense', id, { number: e.ExpenseNumber, amount: e.Amount }, tx);
   });
   res.json({ data: { ok: true } });
 }));
+
+// Phase 3: recurring expenses.
+router.use(recurringRoutes);
 
 export default router;

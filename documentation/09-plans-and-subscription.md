@@ -18,6 +18,7 @@ Prices are set by the Super Admin and can be changed any time under *Admin → P
 | Reports, analytics & CSV export | — | ✓ | ✓ |
 | Backups (data download) | ✓ | ✓ | ✓ |
 | Multi-branch management | — | — | ✓ (planned) |
+| Own e-mail domain & WhatsApp number for patient messages | — | — | ✓ |
 | Priority support | — | — | ✓ |
 
 Tax (GST 18% by default) is added at checkout and shown on the invoice.
@@ -25,6 +26,24 @@ Tax (GST 18% by default) is added at checkout and shown on the invoice.
 ## Buying
 
 Pricing → *Get started* → Register (hospital + owner details + workspace name) → Pay → workspace created. See [chapter 2](02-how-it-works.md).
+
+### When plans are "free for now"
+
+If the platform owner has switched on free mode (see [chapter 7](07-super-admin-guide.md)), the website shows *"Hurray! … FREE for now"*. Registering is the same form, but there is **no payment step**: you click **Create my free workspace** and go straight to your dashboard. Your hospital is just as private and separate as a paid one.
+
+On **Subscription** your plan shows a *Free for now* badge. When the platform starts charging again you will get e-mails first (normally 7 days' notice) and then pay from **Subscription** as usual — your data stays exactly where it is.
+
+### Free trial
+
+Plans with a trial show **“or start a N-day free trial”** on the pricing page. Choose *Start N-day free trial* on the sign-up form: no payment, the workspace is ready at once. **Subscription** shows a *Free trial* badge and the end date. Pay any time from **Subscription** — the paid period starts after the trial, so no trial days are lost. If you do not pay, the normal grace days and then read-only apply; nothing is deleted. One trial per e-mail address and phone number.
+
+### Coupon codes
+
+Type the code in **Coupon code → Apply** on the sign-up summary or on **Subscription** (renewal). The discount comes off the plan price **before GST**, and GST is charged on the rest. A coupon may be limited to some plans, to monthly or annual billing, to sign-ups or renewals, to dates and to a number of uses; most can be used once per hospital. It is counted only when the payment succeeds, and the invoice shows it.
+
+## Invoices
+
+Every sign-up and renewal produces an official invoice automatically — also the free ones (₹0, with the list price and a 100% promotional discount). The hospital finds them under **Subscription → Invoices** (View / PDF); the platform owner under **Super Admin → Invoices**. See [chapter 7](07-super-admin-guide.md) for numbering, GST and corrections.
 
 ## Life of a subscription
 
@@ -39,6 +58,8 @@ Pricing → *Get started* → Register (hospital + owner details + workspace nam
 ## Renewing or changing plan
 
 Owner → **Subscription** → choose plan and monthly/annual → **Renew** → pay. The new period starts from the old end date (if renewing early) so no days are lost.
+
+If the chosen plan is free at that moment, the button says **Switch / extend free** and no payment is taken.
 
 ## Real online payments (Razorpay)
 

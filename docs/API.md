@@ -5,7 +5,7 @@ State-changing requests need header `X-Requested-With` (CSRF guard). Auth is via
 
 | Method & path | Auth / permission | Notes |
 |---|---|---|
-| GET `/plans` | public | prices incl. GST quote |
+| GET `/plans` | public | prices incl. GST quote; `isFree` true while the plan is free for now |
 | GET `/site-settings` | public | contact details |
 | POST `/demo-requests` | public, rate-limited, honeypot | `{orgName, contactName, email, phone, city?, facilityType?, expectedUsers?, preferredAt?, message?}` |
 | POST `/contact` | public, rate-limited | `{name, email, phone?, subject?, message}` |
@@ -38,7 +38,8 @@ State-changing requests need header `X-Requested-With` (CSRF guard). Auth is via
 | GET `/users`, POST `/users`, PATCH `/users/:id` | users.read / users.manage | plan user limit; no self-escalation |
 | GET `/users/roles`, GET `/users/permissions`, PUT `/users/roles/:id/permissions` | users.read / roles.manage | |
 | GET `/admin/overview`, `/admin/tenants`, `/admin/tenants/:id`, POST `/admin/tenants/:id/status` | platform (status: super_admin) | |
-| GET/PUT/POST `/admin/plans` | platform (write: super_admin) | |
+| GET/PUT/POST `/admin/plans` | platform (write: super_admin) | GET adds `isFree`, `freeSince`, `freeHospitals` |
+| POST `/admin/plans/free-mode` `{ free, planId?, noticeDays? }` | super_admin | "Free for now" switch. No `planId` = all priced plans. `free:false` gives free hospitals `noticeDays` (default 7, max 90) then normal renewal. Audited |
 | GET `/admin/subscriptions`, `/admin/payments`, `/admin/contact-messages`, `/admin/audit-logs` | platform | |
 | GET/PATCH `/admin/demo-requests[/:id]` | platform | status, assignee, notes |
 | GET/PUT `/admin/settings` | platform (write: super_admin) | |
@@ -87,3 +88,87 @@ Deletion rules: master data (departments, beds, wards, tests, medicines, supplie
 | GET/POST `/expenses`, PUT/DELETE `/expenses/:id`; GET/POST `/expenses/categories`, PUT/DELETE `/expenses/categories/:id` | expenses.read / expenses.write (billing) |
 | GET `/analytics?from&to` | reports.read (reports) |
 | GET `/backups` (history), GET `/backups/export` (JSON download of this tenant's rows; secrets excluded; 3/min) | backups.manage (all plans; allowed while expired) |
+
+## Messaging, 2-step sign-in, patient report links, GST (migration 006)
+
+| Endpoint | Notes |
+|---|---|
+| POST `/auth/login` | Returns `{ mfaRequired: true, challengeId, sentTo, expiresInMinutes }` (no cookies) when Settings → 2-step sign-in is on and the user is owner/hospital_admin |
+| POST `/auth/login/verify` `{ challengeId, code }` | 6-digit code; 10 min; 5 attempts; sets cookies |
+| POST `/auth/admin/login/verify` | Same for Super Admin when `SUPERADMIN_MFA=true` |
+| POST `/lab/orders/:id/share` `{ channel: whatsapp|email }` | lab.write; verified orders only; 7-day link |
+| GET `/lab/orders/:id/shares`; POST `/lab/orders/:id/shares/:shareId/revoke` | lab.read / lab.write |
+| GET `/public/reports/:token` · POST `/:token/otp` · POST `/:token/view { code }` | Public, rate-limited; report JSON only after OTP |
+| GET `/message-log?channel=` | audit.read; masked recipients; `meta` = which providers are live |
+| PUT `/settings` new keys | `gst.gstin`, `gst.sac_default`, `security.mfa_admins`, `notify.whatsapp`, `notify.daily_summary` (on/off) |
+| POST `/billing/bills/:id/items` `hsnSac` · PATCH `/billing/bills/:id` `{ isInterState, buyerGstin }` | GET bill returns `gst { hospitalGstin, buyerGstin, isInterState, cgst, sgst, igst }` |
+| POST `/patients/check-duplicates` | Phone matched on last 10 digits (any formatting) |
+
+## Hospital messaging settings (migration 007)
+
+| Endpoint | Notes |
+|---|---|
+| GET `/settings/messaging` | settings.read. Preview of From/Reply-To, own-account fields **without secrets** (`hasPassword`, `hasToken`) |
+| PUT `/settings/messaging` `{ replyTo?, email?{enabled,host,port,secure,user,password?,fromEmail}, whatsapp?{enabled,phoneNumberId,token?} }` | settings.manage. `email`/`whatsapp` need plan feature `own_messaging` and server `MESSAGING_ENCRYPTION_KEY`; host must resolve to a public IP; ports 25/465/587/2525 |
+| POST `/settings/messaging/test` `{ channel, to }` | settings.manage; 5 per 10 min; WhatsApp uses Meta's `hello_world` template |
+
+## Free-for-now plans (migration 008)
+
+- `POST /onboarding/checkout` on a free plan → `201 {"data":{"free":true,"provisioned":true,"slug":"…","plan":{…}}}`; the workspace is provisioned in the same request (same `provisionTenant()` as a paid sign-up, subscription `IsFree=1`, no payment/invoice) and the owner gets session cookies. `409 FREE_LIMIT` if the owner e-mail already has a free workspace; `409 SLUG_TAKEN` on a name race.
+- `POST /subscription/renew` on a free plan → `200 {"data":{"free":true,"periodEnd":"…"}}` (no payment). Refused if a free period more than a month ahead is already running.
+- A subscription with `IsFree=1` on a plan that is still free never lapses (`subscriptionState` → active); the scheduler also rolls such periods forward and skips their reminder e-mails.
+
+## Contact rules, geo lists, invoices, hospital location (migrations 009–011)
+
+- Every phone field (patients, emergency contact, staff, users, referral doctors, suppliers, hospital settings, sign-up, demo/contact forms, platform contact) is validated with libphonenumber-js for its country and stored as **E.164** (`+919876543210`). Numbers without `+` are read as Indian. Invalid → `400` with `details[].message = "Enter a valid phone number for the selected country…"`.
+- E-mails: trimmed, lower-cased, stricter than RFC-lite (single `@`, no spaces, valid labels, alphabetic TLD).
+- `country` (ISO-2) / `state` / `city`: state must belong to the country (canonical name stored). Sign-up requires all three (state only if the country has states). City is free text ≤100 (villages).
+- `GET /geo/countries` → `[{code,name,flag}]`; `GET /geo/states?country=IN` → `[{code,name}]`; `GET /geo/cities?country=IN&state=MH` → `["Mumbai", …]`. Public, no DB, `Cache-Control: public, max-age=86400`.
+- Invoices — see `documentation/07-super-admin-guide.md`. `PUT /admin/invoices/:id` requires `reason`; on issued invoices only `billTo`, `notes`, `dueDate`, `paymentMethod`, `paymentRef` are accepted (`409 INVOICE_LOCKED` otherwise). `DELETE` only for drafts (`409 NOT_DRAFT`). `POST /:id/void {reason}`.
+- `PUT /settings/location {latitude, longitude, postalCode}` (settings.manage). Both coordinates or neither; PIN code checked for IN/US/GB.
+
+## Phase 2 (migration 012)
+
+All routes are tenant-scoped (TenantId from the session; composite foreign keys). Highlights:
+- `POST /ipd/admissions/:id/vitals` → `201 { id, flags }` (`flags` e.g. `{ spo2: 'critical_low' }`); `400` if no reading, BP diastolic ≥ systolic, or time outside the last 7 days. `409 ADMISSION_CLOSED` after discharge.
+- `POST /ipd/admissions/:id/notes { category: note|medication|intake_output|procedure|handover, note, medicineName?, dose?, route?, intakeMl?, outputMl?, correctsNoteId? }` — append-only.
+- `POST /ipd/admissions/:id/bed-charges` → `{ daysAdded }`; idempotent (unique index on bed day).
+- `PUT /ipd/admissions/:id/discharge-summary` (draft) · `POST …/finalize` (needs `ipd.discharge_summary`; requires final diagnosis + condition) → `409 RECORD_LOCKED` afterwards. `POST /ipd/admissions/:id/discharge { dischargeSummary?, chargeBedDays? }` — text optional when a signed summary exists.
+- `POST /billing/deposits { patientId, amount, method, reference?, admissionId? }` → `{ receiptNumber: 'ADV-…', balance }` · `POST /billing/deposits/apply { billId, amount? }` (bill must be finalised) · `POST /billing/deposits/refund { patientId, amount, method, reason }` (`billing.refund`).
+- `POST /billing/bills/:id/payment-link { channel: none|whatsapp|email }` → `{ url, expiresAt }`; `400` until Settings → *payment.upi_id* is set. Public `GET /public/pay/:token` → hospital, bill number, amounts, `upiUri` (no items, no diagnosis).
+- `GET /billing/cash/current` (`cash.close`) → collections since the user's last closing · `POST /billing/cash/close { openingFloat, countedCash | denominations, notes? }` — note required when counted ≠ expected · `GET /billing/cash/closings` (own, or everyone's with `cash.read`).
+
+## Phase 3 (migration 013)
+
+Tenant-scoped like everything else; nested routers refuse requests without a hospital session.
+- **Lab panels** — `GET|PUT /lab/tests/:id/parameters` (`lab.configure` to write; `{ parameters: [{ name, unit?, refLow?, refHigh?, refText?, sortOrder? }] }`). Orders snapshot parameters per item. `PUT /lab/orders/:id/items/:itemId/results` accepts `parameters: [{ id, value }]` → per-line flags, item flag = worst line.
+- **Trends** — `GET /lab/patients/:id/trends` → numeric series per test/parameter (verified results only).
+- **Home collection** — `POST /lab/orders` accepts `homeCollection { address, landmark?, contactPhone?, scheduledAt, charge?, notes? }` (charge added to the order). `GET /lab/home-collections?date&status&open` · `POST /lab/home-collections/:id/status { status: assigned|on_the_way|collected|scheduled|cancelled, collectorStaffId?, scheduledAt?, reason? }` (allowed moves only → `409 INVALID_TRANSITION`; `assigned` needs a collector; `collected` marks samples collected).
+- **Barcode** — `barcode` on medicines (unique per hospital; EAN-13/UPC checksum validated when numeric) · `GET /pharmacy/medicines/by-barcode/:code`.
+- **Purchase orders** — `GET /pharmacy/purchase-orders`, `GET …/suggestions` (below reorder level), `GET …/:id`, `POST` (draft), `PUT …/:id` (draft only), `POST …/:id/place`, `POST …/:id/receive { lines: [{ itemId, quantity, batchNumber, expiryDate, salePrice? }] }` (stock in via the normal ledger), `POST …/:id/cancel { reason }`.
+- **Expired stock** — `POST /pharmacy/stock/expire-batch { batchId }` (`pharmacy.configure`; only past-expiry batches).
+- **HR** — `GET|PUT /hr/attendance` (`{ date, entries: [{ staffId, status, checkIn?, checkOut? }] }`, no future dates) · `GET /hr/attendance/summary?month` · `GET|POST /hr/leaves`, `POST /hr/leaves/:id/decide { status: approved|rejected, note? }`, `POST /hr/leaves/:id/cancel` · `PUT /hr/staff/:id/salary` · `GET /hr/payroll?month`, `POST /hr/payroll/generate { month }`, `PUT /hr/payroll/:id { allowances, deductions, notes? }`, `POST /hr/payroll/:id/pay { method }` (creates a *Salaries* expense; `409 PAYROLL_STATE` once paid), `GET /hr/payroll/:id` (payslip).
+- **Recurring expenses** — `GET|POST /expenses/recurring`, `PUT|DELETE /expenses/recurring/:id`, `POST /expenses/recurring/post-due`. Nightly job posts due dates; unique index (RecurringExpenseId, ExpenseDate) makes it idempotent.
+- **Attachments** — `POST /attachments?entityType=expense|bill|patient|purchase_order&entityId=&fileName=&category=` with the raw file as body (≤ 5 MB; type from magic bytes: JPEG/PNG/WebP/PDF) · `GET /attachments?entityType&entityId` · `GET /attachments/:id/file[?download=1]` (nosniff; images get `CSP: sandbox`) · `DELETE /attachments/:id` (soft delete). Permission = the parent record's read/write permission and plan feature.
+- **Reports** — new keys: `pharmacy_sales`, `expiry`, `purchases`, `home_collections`, `expenses_by_category`, `attendance`.
+
+## Phase 4 (migration 014)
+
+**Front desk**
+- `GET /queue/board` (`queue.manage` or `appointments.read`) → today's queues with current/next/waiting/done, estimated wait, tokens (staff view). `POST /queue/tokens { queueKey?: 'doctor:<id>'|'reception'|'lab'|'pharmacy'|'billing', patientId?, appointmentId?, priority? }` → `{ id, number }` (201; 200 with the existing token for an appointment). `POST /queue/call-next { queueKey, counter? }` → called token or `data: null`. `POST /queue/tokens/:id/status { status: called(recall)|done|skipped|waiting|cancelled }` → `409 INVALID_TRANSITION` for final tokens. Checking an appointment in (`POST /appointments/:id/status`) returns `token`.
+- `GET|POST /queue/screens`, `DELETE /queue/screens/:id` (create/remove also need `settings.manage`; the URL is returned once). Public `GET /public/display/:token` (120/min/IP) → hospital, queues (numbers, labels, rooms, counts), recent calls — no patient fields.
+- `GET /appointments/calendar?from&to&doctorId&cancelled` (≤ 42 days).
+- Public booking (only with `booking.enabled = on`): `GET /public/booking/:slug`, `GET /public/booking/:slug/slots?doctorId&date` (today … +30 days, from the weekly schedule minus appointments and pending requests, 30-minute lead time), `POST /public/booking/:slug { doctorId, date, time, name, phone, email?, gender?, age?, reason?, consent: true }` → `{ ref }` (5/hour/IP; max 3 pending per phone; `409 SLOT_TAKEN`). Staff: `GET /booking/requests?status`, `GET /booking/requests/:id/matches`, `POST /booking/requests/:id/confirm { patientId? }` (no id = register new patient), `POST /booking/requests/:id/reject { note }`.
+- Patients: `abhaNumber` (14 digits, dashes allowed), `abhaAddress` (`name@abdm`) on create/PATCH (`409 ABHA_TAKEN`); `PUT /patients/:id/photo { attachmentId|null }` (an image attachment of that patient). Staff: `room`.
+
+**Account**
+- `GET /users/login-history?userId&result=ok|failed` (`users.read`) — this hospital only, 180 days, device name instead of raw user-agent.
+- Support (`support.use`; works when lapsed/suspended): `GET|POST /support/tickets`, `GET /support/tickets/:id`, `POST /support/tickets/:id/messages { body }`, `POST /support/tickets/:id/close`.
+- `GET /branches` (`branches.view`) → group, branches, per-branch figures where the same e-mail has an active account with `dashboard.view`, totals.
+- Coupons & trials: `POST /onboarding/coupon-preview { planCode, interval, couponCode }`, `POST /onboarding/checkout { …, couponCode? | trial: true }` (trial → `{ trial: true, trialEndsAt }`, `409 TRIAL_USED`), `POST /subscription/coupon-preview`, `POST /subscription/renew { …, couponCode? }`. Public plans carry `trialDays`.
+
+**Super Admin** (`/admin/*`, platform session; writes need `super_admin`)
+- `GET|POST /admin/coupons`, `PUT|DELETE /admin/coupons/:id` (used coupons: no rename/delete).
+- `GET /admin/revenue` (MRR, ARR, ARPA, by plan, 12 months), `GET /admin/monitoring`, `GET /admin/login-history?q&type&result&tenantId&page`.
+- `GET /admin/support/tickets?status=waiting|…&q&page`, `GET /admin/support/tickets/:id`, `POST /admin/support/tickets/:id/messages { body, internal?, resolve? }`, `PATCH /admin/support/tickets/:id { status?, priority?, assignedToId? }`, `GET /admin/team`.
+- `GET|POST /admin/groups`, `PUT|DELETE /admin/groups/:id`, `PUT /admin/tenants/:id/group { groupId|null, branchName? }` (`409 BRANCH_LIMIT`). Plans accept `trialDays` (0–90); settings accept `support.email`.

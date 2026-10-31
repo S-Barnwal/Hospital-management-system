@@ -47,6 +47,8 @@ PAYMENT_PROVIDER=sandbox
 
 > ⚠️ **Never share or upload `.env`.** It contains passwords. It is already excluded from Git.
 
+Optional (can be done later): e-mail and WhatsApp settings — see [chapter 15](15-messaging-setup.md). Without them the software runs in test mode and prints messages (including sign-in codes) in the backend terminal.
+
 ## Step 2 — Start the backend
 
 ```bash
