@@ -33,13 +33,56 @@ async function ensureTable(pool) {
     );`);
 }
 
+/**
+ * How to tell that a migration's changes are already in the database: one object or column it creates. Every migration
+ * runs in a single transaction, so if its last object exists the whole file was applied.
+ */
+export const APPLIED_PROBES = {
+  '001_platform.sql': "SELECT CASE WHEN OBJECT_ID('hms.Notifications', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '002_hospital_core.sql': "SELECT CASE WHEN OBJECT_ID('hms.Appointments', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '003_seed_plans.sql': "SELECT CASE WHEN EXISTS (SELECT 1 FROM hms.Plans) THEN 1 ELSE 0 END AS ok",
+  '004_clinical_modules.sql': "SELECT CASE WHEN OBJECT_ID('hms.StockMovements', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '005_lab_finance.sql': "SELECT CASE WHEN OBJECT_ID('hms.TenantBackups', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '006_messaging_security_gst.sql': "SELECT CASE WHEN COL_LENGTH('hms.BillItems', 'HsnSac') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '007_tenant_messaging.sql': "SELECT CASE WHEN COL_LENGTH('hms.MessageLog', 'SentVia') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '008_free_plans.sql': "SELECT CASE WHEN OBJECT_ID('hms.CK_Plans_FreeNotContactSales', 'C') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '009_contact_location.sql': "SELECT CASE WHEN COL_LENGTH('hms.DemoRequests', 'Country') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '010_platform_invoices.sql': "SELECT CASE WHEN OBJECT_ID('hms.PlatformSequences', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '011_hospital_location.sql': "SELECT CASE WHEN OBJECT_ID('hms.CK_Tenants_LatLng', 'C') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '012_phase2_care_and_cash.sql': "SELECT CASE WHEN OBJECT_ID('hms.MoneyReceived', 'V') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '013_phase3_lab_pharmacy_hr.sql': "SELECT CASE WHEN OBJECT_ID('hms.Attachments', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '014_phase4_frontdesk_platform.sql': "SELECT CASE WHEN COL_LENGTH('hms.Tenants', 'GroupId') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+};
+
+/**
+ * A database whose tables were created but whose migration ledger is empty (ledger dropped, created by hand, or by the
+ * old dbo.SchemaMigrations runner): record the migrations that are verifiably already applied, in order, stopping at
+ * the first one that is not — that one and everything after it then run normally. Nothing is re-created or dropped.
+ */
+async function adoptExistingSchema(pool, files, log) {
+  const count = (await pool.request().query('SELECT COUNT(*) AS n FROM hms.SchemaMigrations')).recordset[0].n;
+  const hasTables = (await pool.request().query("SELECT CASE WHEN OBJECT_ID('hms.Plans', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok")).recordset[0].ok;
+  if (count > 0 || !hasTables) return;
+  log('! Tables exist but the migration ledger (hms.SchemaMigrations) is empty — recording the migrations already applied…');
+  for (const file of files) {
+    const probe = APPLIED_PROBES[file];
+    if (!probe || !(await pool.request().query(probe)).recordset[0].ok) break;
+    const script = await readFile(path.join(MIGRATIONS_DIR, file), 'utf8');
+    await pool.request().input('v', sql.NVarChar(200), file).input('c', sql.Char(64), createHash('sha256').update(script).digest('hex'))
+      .query('IF NOT EXISTS (SELECT 1 FROM hms.SchemaMigrations WHERE Version = @v) INSERT INTO hms.SchemaMigrations (Version, Checksum) VALUES (@v, @c)');
+    log(`  ✓ already applied: ${file}`);
+  }
+}
+
 export async function migrate({ statusOnly = false, log = console.log } = {}) {
   const pool = await getPool();
   await ensureTable(pool);
+  const allFiles = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+  if (!statusOnly) await adoptExistingSchema(pool, allFiles, log);
   const applied = new Map(
     (await pool.request().query('SELECT Version, Checksum FROM hms.SchemaMigrations')).recordset.map((r) => [r.Version, r.Checksum]),
   );
-  const files = (await readdir(MIGRATIONS_DIR)).filter((f) => f.endsWith('.sql')).sort();
+  const files = allFiles;
 
   for (const file of files) {
     const script = await readFile(path.join(MIGRATIONS_DIR, file), 'utf8');
@@ -54,10 +97,18 @@ export async function migrate({ statusOnly = false, log = console.log } = {}) {
     }
     if (statusOnly) { log(`  pending  ${file}`); continue; }
 
-    log(`→ applying ${file}`);
     const tx = new sql.Transaction(pool);
     await tx.begin();
     try {
+      // Several processes may migrate at once (e.g. test files running in parallel, or two servers starting together).
+      // An exclusive app lock serialises them; re-checking inside the lock means a migration another process has just
+      // applied is skipped instead of being run a second time ("There is already an object named …").
+      const lock = await new sql.Request(tx).query(
+        "DECLARE @r INT; EXEC @r = sp_getapplock @Resource = N'hms_schema_migrate', @LockMode = 'Exclusive', @LockOwner = 'Transaction', @LockTimeout = 300000; SELECT @r AS r;");
+      if (lock.recordset[0].r < 0) throw new Error('Another migration is still running. Try again in a minute.');
+      const done = await new sql.Request(tx).input('v', sql.NVarChar(200), file).query('SELECT 1 AS x FROM hms.SchemaMigrations WHERE Version = @v');
+      if (done.recordset.length) { await tx.commit(); continue; }
+      log(`→ applying ${file}`);
       for (const batch of splitBatches(script)) {
         await new sql.Request(tx).batch(`SET XACT_ABORT ON;\n${batch}`);
       }
