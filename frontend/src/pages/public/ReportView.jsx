@@ -8,13 +8,14 @@ import { useApi } from '../../lib/hooks.js';
 import { age, dateTime, fullName, titleCase } from '../../lib/format.js';
 import { Alert, Badge, Button, Card, Input, Skeleton, cx } from '../../components/ui.jsx';
 import { LogoMark } from '../../components/Logo.jsx';
+import { formatResult, groupByDepartment, methodLine, refRange } from '../../lib/labReport.js';
 
 const FLAG_TONE = { normal: 'green', low: 'blue', high: 'red', abnormal: 'red' };
 
 function Report({ r }) {
   const tz = r.hospital.timezone;
   const p = r.patient;
-  const groups = r.items.reduce((acc, i) => { const k = i.packageName || i.department || 'Tests'; (acc[k] ||= []).push(i); return acc; }, {});
+  const groups = groupByDepartment(r.items);
   return (
     <div className="mx-auto max-w-3xl bg-white p-6 text-sm print:p-0">
       <div className="mb-3 flex justify-end print:hidden"><Button onClick={() => window.print()}><LuPrinter aria-hidden /> Save as PDF / Print</Button></div>
@@ -28,13 +29,18 @@ function Report({ r }) {
       </tbody></table>
       <table className="table-base mt-4">
         <thead><tr><th>Test</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th></tr></thead>
-        {Object.entries(groups).map(([g, items]) => (
+        {groups.map(([g, items]) => (
           <tbody key={g} className="divide-y divide-line">
             <tr><td colSpan={5} className="bg-ivory text-xs font-bold uppercase tracking-wider">{g}</td></tr>
-            {items.flatMap((i) => (i.parameters?.length ? [
-              <tr key={i.id}><td colSpan={5} className="font-semibold">{i.testName}</td></tr>,
-              ...i.parameters.map((x) => <ResultRow key={`p${x.id}`} name={x.name} r={x} indent />),
-            ] : [<ResultRow key={i.id} name={i.testName} r={i} />]))}
+            {items.flatMap((i) => [
+              ...(i.parameters?.length ? [
+                <tr key={i.id}><td colSpan={5} className="font-semibold">{i.testName}<Meta i={i} /></td></tr>,
+                ...i.parameters.map((x) => (x.isHeading
+                  ? <tr key={`p${x.id}`}><td colSpan={5} className="pl-6 text-xs font-bold uppercase tracking-wide text-muted">{x.name}</td></tr>
+                  : <ResultRow key={`p${x.id}`} name={x.name} r={x} indent />)),
+              ] : [<ResultRow key={i.id} name={<>{i.testName}<Meta i={i} /></>} r={i} />]),
+              ...(i.interpretation ? [<tr key={`int${i.id}`}><td colSpan={5} className="whitespace-pre-line pl-8 text-xs text-muted"><span className="font-semibold text-ink">Interpretation: </span>{i.interpretation}</td></tr>] : []),
+            ])}
           </tbody>
         ))}
       </table>
@@ -44,13 +50,18 @@ function Report({ r }) {
   );
 }
 
+function Meta({ i }) {
+  const line = [i.packageName, methodLine(i)].filter(Boolean).join(' · ');
+  return line ? <span className="block text-xs font-normal text-muted">{line}</span> : null;
+}
+
 function ResultRow({ name, r, indent = false }) {
   return (
     <tr>
       <td className={indent ? 'pl-8 text-sm' : 'font-medium'}>{name}</td>
-      <td className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(r.flag) && 'text-red-700')}>{r.resultValue ?? '—'}</td>
+      <td className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</td>
       <td>{r.unit ?? ''}</td>
-      <td className="text-xs">{r.refLow != null || r.refHigh != null ? `${r.refLow ?? ''} – ${r.refHigh ?? ''}` : r.refText ?? '—'}</td>
+      <td className="text-xs">{refRange(r)}</td>
       <td>{r.flag ? <Badge tone={FLAG_TONE[r.flag]}>{r.flag}</Badge> : '—'}</td>
     </tr>
   );

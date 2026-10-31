@@ -36,6 +36,7 @@ async function ensureTable(pool) {
 /**
  * How to tell that a migration's changes are already in the database: one object or column it creates. Every migration
  * runs in a single transaction, so if its last object exists the whole file was applied.
+ * (tenant-safe: these probes only check that a table/column exists; they read no hospital rows.)
  */
 export const APPLIED_PROBES = {
   '001_platform.sql': "SELECT CASE WHEN OBJECT_ID('hms.Notifications', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
@@ -52,6 +53,7 @@ export const APPLIED_PROBES = {
   '012_phase2_care_and_cash.sql': "SELECT CASE WHEN OBJECT_ID('hms.MoneyReceived', 'V') IS NOT NULL THEN 1 ELSE 0 END AS ok",
   '013_phase3_lab_pharmacy_hr.sql': "SELECT CASE WHEN OBJECT_ID('hms.Attachments', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
   '014_phase4_frontdesk_platform.sql': "SELECT CASE WHEN COL_LENGTH('hms.Tenants', 'GroupId') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '015_lab_master_data.sql': "SELECT CASE WHEN COL_LENGTH('hms.LabResultValues', 'IsHeading') IS NOT NULL THEN 1 ELSE 0 END AS ok",
 };
 
 /**

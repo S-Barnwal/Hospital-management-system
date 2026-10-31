@@ -17,8 +17,11 @@ const toMinor = (v) => strictMinor(Number(v || 0).toFixed(2));
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
 import { labFlag, canMoveLab, allocatePackagePrice, labPaymentStatus, canMoveSample, balanceDue } from '../clinical/logic.js';
 import { panelFlag } from '../clinical/phase3.logic.js';
-import { PARAMS_SQL, attachParameters } from './lab.shared.js';
+import { PARAMS_SQL, attachParameters, itemsSql } from './lab.shared.js';
 import labExtrasRoutes from './labExtras.routes.js';
+import labMasterRoutes from './labMaster.routes.js';
+import { recordPrice, testSchema, insertLabTest, updateLabTest } from './labTests.service.js';
+import { checkResult, panelComplete } from '../clinical/labMaster.logic.js';
 import { config } from '../../config/env.js';
 import { randomToken, sha256Hex } from '../../utils/crypto.js';
 import { deliver, templates } from '../../notify/index.js';
@@ -33,54 +36,29 @@ const nullableNum = z.union([z.literal('').transform(() => null), z.null(), z.co
 const optText = (max) => z.string().trim().max(max).nullable().optional();
 const price = z.coerce.number().min(0).max(1e7);
 
-export const DEFAULT_LAB_DEPARTMENTS = ['Biochemistry', 'Haematology', 'Clinical Pathology', 'Microbiology', 'Serology & Immunology', 'Histopathology', 'Hormones'];
-
-/** Appends a row to the price timeline. */
-async function recordPrice(tx, ctx, type, itemId, value, reason) {
-  await tx.exec(`INSERT INTO hms.LabPriceHistory (TenantId, ItemType, ItemId, Price, Reason, ChangedByUserId) VALUES (@tid, @type, @id, @price, @reason, @uid)`,
-    { tid: ctx.tenantId, type, id: itemId, price: t.money(Number(value).toFixed(2)), reason: String(reason).slice(0, 200), uid: ctx.userId });
-}
-
-router.get('/departments', requirePermission('lab.read'), asyncHandler(async (req, res) => {
-  const rows = await db.query(`SELECT Department AS d FROM hms.LabTests WHERE TenantId = @tid AND Department IS NOT NULL
-                               UNION SELECT Department FROM hms.LabPackages WHERE TenantId = @tid AND Department IS NOT NULL`, { tid: req.ctx.tenantId });
-  const all = new Set([...DEFAULT_LAB_DEPARTMENTS, ...rows.map((r) => r.d)]);
-  res.json({ data: [...all].sort((a, b) => a.localeCompare(b)) });
-}));
-
 // ---------- Test catalogue ----------
 router.get('/tests', requirePermission('lab.read'), asyncHandler(async (req, res) => {
-  const rows = await db.query(`SELECT LabTestId AS id, Code AS code, Name AS name, Department AS department, Description AS description, SampleType AS sampleType,
-                                      Unit AS unit, RefLow AS refLow, RefHigh AS refHigh, RefText AS refText, Price AS price, IsActive AS isActive,
-                                      (SELECT COUNT(*) FROM hms.LabTestParameters lp WHERE lp.TenantId = LabTests.TenantId AND lp.LabTestId = LabTests.LabTestId AND lp.IsActive = 1) AS parameterCount
-                               FROM hms.LabTests WHERE TenantId = @tid AND (@all = 1 OR IsActive = 1)
-                                 AND (@q IS NULL OR Name LIKE @q OR Code LIKE @q) AND (@dept IS NULL OR Department = @dept)
-                               ORDER BY Name`,
-  { tid: req.ctx.tenantId, all: req.query.all === 'true', q: like(req.query.q), dept: req.query.department ? String(req.query.department).slice(0, 60) : null });
-  res.json({ data: rows });
+  const deptId = /^\d{1,9}$/.test(String(req.query.departmentId || '')) ? Number(req.query.departmentId) : null;
+  const rows = await db.query(`SELECT lt.LabTestId AS id, lt.Code AS code, lt.Name AS name, ISNULL(d.Name, lt.Department) AS department, lt.DepartmentId AS departmentId,
+                                      lt.Description AS description, lt.SampleType AS sampleType, lt.Unit AS unit, lt.RefLow AS refLow, lt.RefHigh AS refHigh,
+                                      lt.RefText AS refText, lt.Price AS price, lt.IsActive AS isActive, lt.Method AS method, lt.Instrument AS instrument,
+                                      lt.Interpretation AS interpretation, lt.InputType AS inputType, lt.Options AS options, lt.Decimals AS decimals,
+                                      lt.TatHours AS tatHours, lt.SortOrder AS sortOrder,
+                                      (SELECT COUNT(*) FROM hms.LabTestParameters lp WHERE lp.TenantId = lt.TenantId AND lp.LabTestId = lt.LabTestId AND lp.IsActive = 1) AS parameterCount
+                               FROM hms.LabTests lt LEFT JOIN hms.LabDepartments d ON d.TenantId = lt.TenantId AND d.LabDepartmentId = lt.DepartmentId
+                               WHERE lt.TenantId = @tid AND (@all = 1 OR lt.IsActive = 1)
+                                 AND (@q IS NULL OR lt.Name LIKE @q OR lt.Code LIKE @q)
+                                 AND (@dept IS NULL OR ISNULL(d.Name, lt.Department) = @dept) AND (@deptId IS NULL OR lt.DepartmentId = @deptId)
+                               ORDER BY ISNULL(d.SortOrder, 9999), ISNULL(lt.SortOrder, 9999), lt.Name`,
+  { tid: req.ctx.tenantId, all: req.query.all === 'true', q: like(req.query.q), dept: req.query.department ? String(req.query.department).slice(0, 60) : null, deptId });
+  res.json({ data: rows.map((r) => ({ ...r, options: r.options ? r.options.split('|') : [] })) });
 }));
-
-const testSchema = z.object({
-  code: z.string().trim().toUpperCase().regex(/^[A-Z0-9_-]{1,20}$/, 'Use letters, numbers, - or _ (max 20)'), name: z.string().trim().min(2).max(150),
-  department: optText(60), description: optText(500),
-  sampleType: optText(40), unit: optText(30), refLow: nullableNum, refHigh: nullableNum, refText: optText(100),
-  price, isActive: z.boolean().optional(), priceReason: z.string().trim().max(200).optional(),
-}).strict().refine((v) => v.refLow == null || v.refHigh == null || v.refHigh >= v.refLow, { message: 'High limit must be ≥ low limit', path: ['refHigh'] });
-
-const testParams = (b) => ({
-  code: b.code, name: b.name, dept: b.department || null, descr: b.description || null, st: b.sampleType || null, unit: b.unit || null,
-  lo: b.refLow == null ? null : t.dec(b.refLow, 12, 4), hi: b.refHigh == null ? null : t.dec(b.refHigh, 12, 4), txt: b.refText || null,
-  price: t.money(Number(b.price).toFixed(2)), active: b.isActive ?? true,
-});
 
 router.post('/tests', requirePermission('lab.configure'), validate(testSchema), asyncHandler(async (req, res) => {
   const id = await withTransaction(async (tx) => {
-    const r = await tx.one(`INSERT INTO hms.LabTests (TenantId, Code, Name, Department, Description, SampleType, Unit, RefLow, RefHigh, RefText, Price, IsActive)
-                            OUTPUT INSERTED.LabTestId VALUES (@tid, @code, @name, @dept, @descr, @st, @unit, @lo, @hi, @txt, @price, @active)`,
-    { tid: req.ctx.tenantId, ...testParams(req.body) });
-    await recordPrice(tx, req.ctx, 'test', r.LabTestId, req.body.price, 'Initial price');
-    await auditTenant(req, 'lab_test.created', 'lab_test', r.LabTestId, { code: req.body.code }, tx);
-    return r.LabTestId;
+    const newId = await insertLabTest(tx, req.ctx, req.body);
+    await auditTenant(req, 'lab_test.created', 'lab_test', newId, { code: req.body.code }, tx);
+    return newId;
   });
   res.status(201).json({ data: { id } });
 }));
@@ -88,14 +66,7 @@ router.post('/tests', requirePermission('lab.configure'), validate(testSchema), 
 router.put('/tests/:id', requirePermission('lab.configure'), validate(testSchema), asyncHandler(async (req, res) => {
   const id = idParam(req.params.id);
   await withTransaction(async (tx) => {
-    const old = await tx.one('SELECT Price FROM hms.LabTests WITH (UPDLOCK) WHERE TenantId = @tid AND LabTestId = @id', { tid: req.ctx.tenantId, id });
-    if (!old) throw notFound('Test not found.');
-    await tx.exec(`UPDATE hms.LabTests SET Code = @code, Name = @name, Department = @dept, Description = @descr, SampleType = @st, Unit = @unit,
-                     RefLow = @lo, RefHigh = @hi, RefText = @txt, Price = @price, IsActive = @active WHERE TenantId = @tid AND LabTestId = @id`,
-    { tid: req.ctx.tenantId, id, ...testParams(req.body) });
-    if (Number(old.Price).toFixed(2) !== Number(req.body.price).toFixed(2)) {
-      await recordPrice(tx, req.ctx, 'test', id, req.body.price, req.body.priceReason || 'Updated in test catalogue');
-    }
+    await updateLabTest(tx, req.ctx, id, req.body);
     await auditTenant(req, 'lab_test.updated', 'lab_test', id, null, tx);
   });
   res.json({ data: { ok: true } });
@@ -387,7 +358,9 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
 
     // Individual tests
     const testIds = [...new Set(b.testIds)];
-    const tests = testIds.length ? await tx.query(`SELECT * FROM hms.LabTests WHERE TenantId = @tid AND IsActive = 1 AND LabTestId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ','))`,
+    const tests = testIds.length ? await tx.query(`SELECT lt.*, d.Name AS DeptName, d.SortOrder AS DeptSort FROM hms.LabTests lt
+        LEFT JOIN hms.LabDepartments d ON d.TenantId = lt.TenantId AND d.LabDepartmentId = lt.DepartmentId
+        WHERE lt.TenantId = @tid AND lt.IsActive = 1 AND lt.LabTestId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ','))`,
       { tid: ctx.tenantId, ids: testIds.join(',') }) : [];
     if (tests.length !== testIds.length) throw badRequest('One or more tests are invalid or inactive.');
 
@@ -396,8 +369,9 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
     const packages = packageIds.length ? await tx.query(`SELECT * FROM hms.LabPackages WHERE TenantId = @tid AND IsActive = 1 AND LabPackageId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ','))`,
       { tid: ctx.tenantId, ids: packageIds.join(',') }) : [];
     if (packages.length !== packageIds.length) throw badRequest('One or more packages are invalid or inactive.');
-    const packageTests = packageIds.length ? await tx.query(`SELECT pt.LabPackageId, lt.* FROM hms.LabPackageTests pt
+    const packageTests = packageIds.length ? await tx.query(`SELECT pt.LabPackageId, lt.*, d.Name AS DeptName, d.SortOrder AS DeptSort FROM hms.LabPackageTests pt
         JOIN hms.LabTests lt ON lt.TenantId = pt.TenantId AND lt.LabTestId = pt.LabTestId
+        LEFT JOIN hms.LabDepartments d ON d.TenantId = lt.TenantId AND d.LabDepartmentId = lt.DepartmentId
         WHERE pt.TenantId = @tid AND pt.LabPackageId IN (SELECT CAST(value AS INT) FROM STRING_SPLIT(@ids, ',')) ORDER BY lt.LabTestId`,
     { tid: ctx.tenantId, ids: packageIds.join(',') }) : [];
 
@@ -432,15 +406,19 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
       gross: t.money(fromMinor(grossMinor)), disc: t.money(fromMinor(discountMinor)), net: t.money(fromMinor(grossMinor - discountMinor)) });
 
     for (const { test, priceMinor, pkg } of lines) {
-      const item = await tx.one(`INSERT INTO hms.LabOrderItems (TenantId, LabOrderId, LabTestId, TestName, Unit, RefLow, RefHigh, RefText, Price, LabPackageId, PackageName)
+      // Snapshot of everything the report prints, so later catalogue edits never change this order.
+      const item = await tx.one(`INSERT INTO hms.LabOrderItems (TenantId, LabOrderId, LabTestId, TestName, Unit, RefLow, RefHigh, RefText, Price, LabPackageId, PackageName,
+                       DepartmentName, DepartmentSort, Method, Instrument, Interpretation, InputType, Options, Decimals)
                      OUTPUT INSERTED.LabOrderItemId
-                     VALUES (@tid, @oid, @test, @name, @unit, @lo, @hi, @txt, @price, @pkg, @pkgName)`,
+                     VALUES (@tid, @oid, @test, @name, @unit, @lo, @hi, @txt, @price, @pkg, @pkgName, @dept, @deptSort, @method, @instr, @interp, @itype, @opts, @dec)`,
       { tid: ctx.tenantId, oid: order.LabOrderId, test: test.LabTestId, name: test.Name, unit: test.Unit, lo: test.RefLow == null ? null : t.dec(test.RefLow, 12, 4),
         hi: test.RefHigh == null ? null : t.dec(test.RefHigh, 12, 4), txt: test.RefText, price: t.money(fromMinor(priceMinor)),
-        pkg: pkg ? pkg.LabPackageId : null, pkgName: pkg ? pkg.Name : null });
-      // Panel tests (e.g. CBC): snapshot every active parameter so later catalogue edits never change this order.
-      await tx.exec(`INSERT INTO hms.LabResultValues (TenantId, LabOrderItemId, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder)
-                     SELECT TenantId, @item, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder
+        pkg: pkg ? pkg.LabPackageId : null, pkgName: pkg ? pkg.Name : null, dept: test.DeptName ?? test.Department ?? null, deptSort: test.DeptSort ?? null,
+        method: test.Method ?? null, instr: test.Instrument ?? null, interp: test.Interpretation ?? null, itype: test.InputType ?? 'numeric',
+        opts: test.Options ?? null, dec: test.Decimals ?? null });
+      // Panel tests (e.g. CBC): snapshot every active parameter as well.
+      await tx.exec(`INSERT INTO hms.LabResultValues (TenantId, LabOrderItemId, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading)
+                     SELECT TenantId, @item, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading
                      FROM hms.LabTestParameters WHERE TenantId = @tid AND LabTestId = @test AND IsActive = 1`,
       { tid: ctx.tenantId, item: item.LabOrderItemId, test: test.LabTestId });
     }
@@ -514,10 +492,7 @@ router.get('/orders/:id', requirePermission('lab.read'), asyncHandler(async (req
     LEFT JOIN hms.Users v ON v.TenantId = o.TenantId AND v.UserId = o.VerifiedByUserId
     JOIN hms.Tenants t ON t.TenantId = o.TenantId
     WHERE o.TenantId = @tid AND o.LabOrderId = @id;
-    SELECT i.LabOrderItemId AS id, i.TestName AS testName, i.Unit AS unit, i.RefLow AS refLow, i.RefHigh AS refHigh, i.RefText AS refText, i.Price AS price,
-           i.ResultValue AS resultValue, i.Flag AS flag, i.EnteredAt AS enteredAt, i.PackageName AS packageName, lt.Department AS department, lt.SampleType AS sampleType
-    FROM hms.LabOrderItems i LEFT JOIN hms.LabTests lt ON lt.TenantId = i.TenantId AND lt.LabTestId = i.LabTestId
-    WHERE i.TenantId = @tid AND i.LabOrderId = @id ORDER BY i.PackageName, i.LabOrderItemId;
+    ${itemsSql()}
     SELECT LabSampleId AS id, SampleNumber AS number, SampleType AS sampleType, Status AS status, CollectedAt AS collectedAt, ReceivedAt AS receivedAt, RejectReason AS rejectReason
     FROM hms.LabSamples WHERE TenantId = @tid AND LabOrderId = @id ORDER BY SampleType;
     ${PARAMS_SQL}
@@ -580,9 +555,9 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
       if (!['sample_collected', 'completed'].includes(o.Status)) {
         throw conflict(o.Status === 'verified' ? 'Results are verified and locked.' : 'Collect the sample before entering results.', 'LAB_STATE');
       }
-      const items = await tx.query('SELECT LabOrderItemId, RefLow, RefHigh FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
+      const items = await tx.query('SELECT LabOrderItemId, RefLow, RefHigh, InputType, Options FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
       const byId = new Map(items.map((i) => [Number(i.LabOrderItemId), i]));
-      const panelRows = await tx.query(`SELECT v.ResultValueId, v.LabOrderItemId, v.RefLow, v.RefHigh FROM hms.LabResultValues v
+      const panelRows = await tx.query(`SELECT v.ResultValueId, v.LabOrderItemId, v.RefLow, v.RefHigh, v.InputType, v.Options, v.IsHeading, v.Name FROM hms.LabResultValues v
           JOIN hms.LabOrderItems i ON i.TenantId = v.TenantId AND i.LabOrderItemId = v.LabOrderItemId WHERE v.TenantId = @tid AND i.LabOrderId = @id`,
       { tid: req.ctx.tenantId, id });
       const panelItems = new Set(panelRows.map((r) => Number(r.LabOrderItemId)));
@@ -591,8 +566,9 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
       for (const r of req.body.parameters) {
         const row = paramById.get(r.id);
         if (!row) throw badRequest('Result refers to a parameter that is not on this order.');
-        const value = r.value || null;
-        const numeric = value !== null && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : null;
+        const checked = checkResult({ inputType: row.InputType, options: row.Options, isHeading: row.IsHeading }, r.value);
+        if (checked.error) throw badRequest(`${row.Name}: ${checked.error}`);
+        const { value, numeric } = checked;
         await tx.exec(`UPDATE hms.LabResultValues SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
                        WHERE TenantId = @tid AND ResultValueId = @rid`,
         { tid: req.ctx.tenantId, rid: r.id, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f: labFlag(numeric, row.RefLow, row.RefHigh), uid: req.ctx.userId });
@@ -600,18 +576,20 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
       }
       // A panel line is "done" when every parameter has a value; its flag summarises the parameters.
       for (const itemId of touchedPanels) {
-        const ps = await tx.query('SELECT ResultValue, Flag FROM hms.LabResultValues WHERE TenantId = @tid AND LabOrderItemId = @item', { tid: req.ctx.tenantId, item: itemId });
-        const done = ps.every((x) => x.ResultValue !== null);
+        const ps = await tx.query('SELECT ResultValue, Flag, IsHeading FROM hms.LabResultValues WHERE TenantId = @tid AND LabOrderItemId = @item', { tid: req.ctx.tenantId, item: itemId });
+        const done = panelComplete(ps.map((x) => ({ value: x.ResultValue, isHeading: Boolean(x.IsHeading) })));
+        const valueRows = ps.filter((x) => !x.IsHeading);
         await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = NULL, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
                        WHERE TenantId = @tid AND LabOrderId = @id AND LabOrderItemId = @item`,
-        { tid: req.ctx.tenantId, id, item: itemId, v: done ? `${ps.length} parameters` : null, f: done ? panelFlag(ps.map((x) => x.Flag)) : null, uid: req.ctx.userId });
+        { tid: req.ctx.tenantId, id, item: itemId, v: done ? `${valueRows.length} parameters` : null, f: done ? panelFlag(valueRows.map((x) => x.Flag)) : null, uid: req.ctx.userId });
       }
       for (const r of req.body.results) {
         const item = byId.get(r.itemId);
         if (!item) throw badRequest('Result refers to a test that is not on this order.');
         if (panelItems.has(r.itemId)) throw badRequest('Enter this test’s result parameter by parameter.');
-        const value = r.value || null;
-        const numeric = value !== null && /^-?\d+(\.\d+)?$/.test(value) ? Number(value) : null;
+        const checked = checkResult({ inputType: item.InputType, options: item.Options }, r.value);
+        if (checked.error) throw badRequest(checked.error);
+        const { value, numeric } = checked;
         await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
                        WHERE TenantId = @tid AND LabOrderId = @id AND LabOrderItemId = @item`,
         { tid: req.ctx.tenantId, id, item: r.itemId, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f: labFlag(numeric, item.RefLow, item.RefHigh), uid: req.ctx.userId });
@@ -759,5 +737,6 @@ router.post('/samples/:id/:action', requirePermission('lab.write'),
 
 // Phase 3: test parameters, patient trends, home collection.
 router.use(labExtrasRoutes);
+router.use(labMasterRoutes);
 
 export default router;

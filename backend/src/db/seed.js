@@ -7,7 +7,7 @@ import { config } from '../config/env.js';
 import { db, withTransaction, closePool } from './pool.js';
 import { PERMISSIONS, ROLE_TEMPLATES } from '../modules/rbac/permissions.js';
 import { hashPassword, passwordProblem } from '../utils/password.js';
-import { provisionTenant, seedDefaultLabTests, seedDefaultExpenseCategories, seedDefaultServiceCharges } from '../modules/tenants/provisioning.js';
+import { provisionTenant, seedDefaultLabTests, seedDefaultLabDepartments, seedDefaultExpenseCategories, seedDefaultServiceCharges } from '../modules/tenants/provisioning.js';
 import { nextSequence, formatNumber } from '../modules/tenants/sequences.js';
 
 export async function seedPermissions() {
@@ -36,7 +36,7 @@ export async function seedPermissions() {
 export async function backfillTenants() {
   const tenants = await db.query('SELECT TenantId FROM hms.Tenants');
   for (const { TenantId } of tenants) {
-    await withTransaction(async (tx) => { await seedDefaultLabTests(tx, TenantId); await seedDefaultExpenseCategories(tx, TenantId); await seedDefaultServiceCharges(tx, TenantId); });
+    await withTransaction(async (tx) => { await seedDefaultLabDepartments(tx, TenantId); await seedDefaultLabTests(tx, TenantId); await seedDefaultExpenseCategories(tx, TenantId); await seedDefaultServiceCharges(tx, TenantId); });
   }
   if (tenants.length) console.log(`✓ default lab tests ensured for ${tenants.length} hospital(s)`);
 }

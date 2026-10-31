@@ -30,6 +30,17 @@ export async function seedDefaultLabTests(tx, tenantId) {
   }
 }
 
+/** Usual lab departments with their order on the report (each hospital can rename, reorder or switch them off). */
+export const DEFAULT_LAB_DEPARTMENTS = [['Haematology', 10], ['Biochemistry', 20], ['Clinical Pathology', 30], ['Serology & Immunology', 40],
+  ['Hormones', 50], ['Microbiology', 60], ['Histopathology', 70]];
+
+export async function seedDefaultLabDepartments(tx, tenantId) {
+  for (const [name, sort] of DEFAULT_LAB_DEPARTMENTS) {
+    await tx.exec(`IF NOT EXISTS (SELECT 1 FROM hms.LabDepartments WHERE TenantId = @tid AND Name = @name)
+                   INSERT INTO hms.LabDepartments (TenantId, Name, SortOrder) VALUES (@tid, @name, @sort)`, { tid: tenantId, name, sort });
+  }
+}
+
 export const DEFAULT_EXPENSE_CATEGORIES = ['Salaries', 'Rent', 'Electricity & utilities', 'Lab reagents & consumables', 'Equipment maintenance', 'Medical supplies', 'Marketing', 'Miscellaneous'];
 
 export async function seedDefaultExpenseCategories(tx, tenantId) {
@@ -114,6 +125,7 @@ export async function provisionTenant(tx, o, plan, payment, actor = { type: 'sys
   for (const name of DEFAULT_DEPARTMENTS) {
     await tx.exec('INSERT INTO hms.Departments (TenantId, Name) VALUES (@tid, @name)', { tid: tenantId, name });
   }
+  await seedDefaultLabDepartments(tx, tenantId);
   await seedDefaultLabTests(tx, tenantId);
   await seedDefaultExpenseCategories(tx, tenantId);
   await seedDefaultServiceCharges(tx, tenantId);

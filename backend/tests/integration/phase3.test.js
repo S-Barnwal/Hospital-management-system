@@ -204,7 +204,7 @@ describe('Phase 3: recurring expenses and attachments', () => {
     const catB = ok(await b('GET', '/expenses/categories'))[0];
     assert.equal((await a('POST', '/expenses/recurring', { title: 'Rent', categoryId: catB.id, amount: 1000, method: 'bank', frequency: 'weekly', nextDueDate: daysAgo(14) })).status, 400, 'other hospital\'s category');
     const rec = ok(await a('POST', '/expenses/recurring', { title: `Rent ${suffix}`, categoryId: cats[0].id, amount: 1000, method: 'bank', frequency: 'weekly', nextDueDate: daysAgo(14) }), 201);
-    assert.equal((await b('PUT', `/expenses/recurring/${rec.id}`, { title: 'x', categoryId: catB.id, amount: 1, method: 'cash', frequency: 'weekly', nextDueDate: daysAgo(1) })).status, 404);
+    assert.equal((await b('PUT', `/expenses/recurring/${rec.id}`, { title: 'Hijack attempt', categoryId: catB.id, amount: 1, method: 'cash', frequency: 'weekly', nextDueDate: daysAgo(1) })).status, 404);
     assert.equal((await b('DELETE', `/expenses/recurring/${rec.id}`)).status, 404);
     ok(await b('POST', '/expenses/recurring/post-due'));
     const countFor = async () => (await db.one('SELECT COUNT(*) AS n FROM hms.Expenses WHERE TenantId = @t AND RecurringExpenseId = @r', { t: ids.tenantA, r: rec.id })).n;

@@ -1,7 +1,7 @@
 // Laboratory master data and work queues: Tests, Packages (+ price history), Samples, Results, Referral doctors.
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound, LuListTree } from 'react-icons/lu';
+import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound, LuListTree, LuUpload, LuDownload, LuLayers } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -12,6 +12,7 @@ import PhoneInput from '../../components/PhoneInput.jsx';
 import EmailInput from '../../components/EmailInput.jsx';
 import { formatPhone } from '../../lib/contact.js';
 import { ParametersModal } from './LabExtras.jsx';
+import { csvToObjects, downloadText, toCsv } from '../../lib/csv.js';
 
 const ActiveBadge = ({ on }) => <Badge tone={on ? 'green' : 'gray'}>{on ? 'Active' : 'Inactive'}</Badge>;
 const confirmDelete = (msg) => window.confirm(msg);
@@ -33,7 +34,7 @@ function DepartmentInput({ f, name = 'department' }) {
   return (
     <>
       <Input label="Department" list="lab-departments" placeholder="e.g. Biochemistry" {...f.bind(name)} error={f.errors[name]} />
-      <datalist id="lab-departments">{(data || []).map((d) => <option key={d} value={d} />)}</datalist>
+      <datalist id="lab-departments">{(data || []).map((d) => <option key={d.id} value={d.name} />)}</datalist>
     </>
   );
 }
@@ -45,20 +46,26 @@ export function LabTests() {
   const [q, setQ] = useState('');
   const [dept, setDept] = useState('');
   const search = useDebounced(q);
-  const { data: depts } = useApi(() => api.get('/lab/departments'), []);
-  const { data, loading, error, reload } = useApi(() => api.get(`/lab/tests${qs({ all: 'true', q: search, department: dept })}`), [search, dept]);
+  const { data: depts, reload: reloadDepts } = useApi(() => api.get('/lab/departments?all=true'), []);
+  const { data, loading, error, reload } = useApi(() => api.get(`/lab/tests${qs({ all: 'true', q: search, departmentId: dept })}`), [search, dept]);
   const [editing, setEditing] = useState(null);
   const [paramsFor, setParamsFor] = useState(null);
+  const [deptsOpen, setDeptsOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(false);
   const f = useForm({});
   useEffect(() => {
-    if (editing) f.setValues(editing === 'new' ? { code: '', name: '', department: '', description: '', sampleType: 'Blood', unit: '', refLow: '', refHigh: '', refText: '', price: '0', isActive: true }
-      : { ...Object.fromEntries(Object.entries(editing).map(([k, v]) => [k, v ?? ''])), isActive: editing.isActive, priceReason: '' });
+    if (editing) f.setValues(editing === 'new' ? { ...BLANK_TEST }
+      : { ...Object.fromEntries(Object.entries(editing).map(([k, v]) => [k, v ?? ''])), departmentId: editing.departmentId ? String(editing.departmentId) : '',
+        options: (editing.options || []).join('\n'), isActive: editing.isActive, priceReason: '' });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [editing]);
   const priceChanged = editing && editing !== 'new' && Number(f.values.price) !== Number(editing.price);
+  const activeDepts = (depts || []).filter((d) => d.isActive || String(d.id) === String(f.values.departmentId));
   const save = f.submit(async (v) => {
-    const body = { code: v.code, name: v.name, department: v.department || null, description: v.description || null, sampleType: v.sampleType || null, unit: v.unit || null,
-      refLow: v.refLow, refHigh: v.refHigh, refText: v.refText || null, price: v.price, isActive: Boolean(v.isActive), ...(priceChanged && v.priceReason ? { priceReason: v.priceReason } : {}) };
+    const body = { code: v.code, name: v.name, departmentId: v.departmentId ? Number(v.departmentId) : null, description: v.description || null, sampleType: v.sampleType || null, unit: v.unit || null,
+      refLow: v.refLow, refHigh: v.refHigh, refText: v.refText || null, price: v.price, isActive: Boolean(v.isActive), ...(priceChanged && v.priceReason ? { priceReason: v.priceReason } : {}),
+      method: v.method || null, instrument: v.instrument || null, interpretation: v.interpretation || null, inputType: v.inputType || 'numeric',
+      options: v.inputType === 'option' ? splitOptions(v.options) : [], decimals: v.decimals, tatHours: v.tatHours, sortOrder: v.sortOrder };
     if (editing === 'new') await api.post('/lab/tests', body); else await api.put(`/lab/tests/${editing.id}`, body);
     notify.success(editing === 'new' ? 'Test added.' : 'Test updated.');
     setEditing(null); reload();
@@ -66,10 +73,14 @@ export function LabTests() {
   return (
     <>
       <PageHeader title="Tests" subtitle="Your lab’s test menu with reference ranges and prices."
-        actions={can('lab.configure') && <Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> New test</Button>} />
+        actions={can('lab.configure') && <div className="flex flex-wrap gap-2">
+          <Button variant="outline" onClick={() => setDeptsOpen(true)}><LuLayers aria-hidden /> Departments</Button>
+          <Button variant="outline" onClick={() => setImportOpen(true)}><LuUpload aria-hidden /> Import CSV</Button>
+          <Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> New test</Button>
+        </div>} />
       <Card>
         <SearchBar value={q} onChange={setQ} placeholder="Search name, code…">
-          <Select label="Department" placeholder="All departments" className="sm:w-56" value={dept} onChange={(e) => setDept(e.target.value)} options={(depts || []).map((d) => ({ value: d, label: d }))} />
+          <Select label="Department" placeholder="All departments" className="sm:w-56" value={dept} onChange={(e) => setDept(e.target.value)} options={(depts || []).map((d) => ({ value: String(d.id), label: d.name }))} />
         </SearchBar>
         <DataTable loading={loading} error={error} rows={data} empty={<EmptyState icon={LuFlaskConical} title="No tests found" />}
           columns={[
@@ -77,7 +88,9 @@ export function LabTests() {
             { key: 'name', label: 'Test name', render: (t) => <span className="font-medium">{t.name}</span> },
             { key: 'department', label: 'Department', render: (t) => t.department || '—' },
             { key: 'sampleType', label: 'Sample', render: (t) => t.sampleType || '—' },
-            { key: 'range', label: 'Reference range', render: (t) => (t.refLow != null || t.refHigh != null ? `${t.refLow ?? ''} – ${t.refHigh ?? ''} ${t.unit ?? ''}` : t.refText || '—') },
+            { key: 'range', label: 'Reference range', render: (t) => (t.inputType === 'option' ? <span className="text-xs">{t.options.join(' / ')}</span>
+              : t.refLow != null || t.refHigh != null ? `${t.refLow ?? ''} – ${t.refHigh ?? ''} ${t.unit ?? ''}` : t.refText || '—') },
+            { key: 'tatHours', label: 'TAT', render: (t) => (t.tatHours ? `${t.tatHours} h` : '—') },
             { key: 'price', label: 'Price', className: 'text-right', render: (t) => money(t.price) },
             { key: 'isActive', label: 'Status', render: (t) => <ActiveBadge on={t.isActive} /> },
             { key: 'act', label: 'Actions', className: 'text-right', render: (t) => (
@@ -90,19 +103,30 @@ export function LabTests() {
           ]} />
       </Card>
       {paramsFor && <ParametersModal test={paramsFor} onClose={(changed) => { setParamsFor(null); if (changed) reload(); }} />}
+      {deptsOpen && <DepartmentsModal onClose={() => { setDeptsOpen(false); reloadDepts(); reload(); }} />}
+      {importOpen && <ImportTestsModal onClose={(changed) => { setImportOpen(false); if (changed) { reload(); reloadDepts(); } }} />}
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'New test' : `Edit test — ${editing?.code ?? ''}`} size="lg"
         footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2" noValidate>
           <Input label="Code" required {...f.bind('code')} error={f.errors.code} hint="Short unique code, e.g. CBC" />
           <Input label="Test name" required {...f.bind('name')} error={f.errors.name} />
-          <DepartmentInput f={f} />
+          <Select label="Department" placeholder="— None —" {...f.bind('departmentId')} error={f.errors.departmentId}
+            options={activeDepts.map((d) => ({ value: String(d.id), label: d.isActive ? d.name : `${d.name} (off)` }))} hint="Groups and orders tests on the report" />
           <Input label="Sample type" list="sample-types" {...f.bind('sampleType')} hint="Tests with the same sample type share one sample" />
           <datalist id="sample-types">{['Blood', 'Serum', 'Plasma', 'Urine', 'Stool', 'Swab', 'Sputum', 'CSF'].map((s) => <option key={s} value={s} />)}</datalist>
           <Input label="Unit" {...f.bind('unit')} />
           <Input label="Price (₹)" type="number" min="0" step="0.01" required {...f.bind('price')} error={f.errors.price} />
+          <Select label="Result type" {...f.bind('inputType')} options={INPUT_TYPE_OPTIONS} hint="Single-result tests; panel parameters have their own" />
+          <Input label="Decimals shown" type="number" min="0" max="6" {...f.bind('decimals')} error={f.errors.decimals} hint="Blank = as entered" />
+          {f.values.inputType === 'option' && <Textarea label="Dropdown choices (one per line)" required {...f.bind('options')} error={f.errors.options} className="sm:col-span-2" placeholder={'Positive\nNegative'} />}
           <Input label="Ref. low" type="number" step="any" {...f.bind('refLow')} error={f.errors.refLow} />
           <Input label="Ref. high" type="number" step="any" {...f.bind('refHigh')} error={f.errors.refHigh} />
           <Input label="Reference text (non-numeric results)" {...f.bind('refText')} className="sm:col-span-2" />
+          <Input label="Method" {...f.bind('method')} error={f.errors.method} placeholder="e.g. Photometry" />
+          <Input label="Instrument" {...f.bind('instrument')} error={f.errors.instrument} />
+          <Input label="Turnaround time (hours)" type="number" min="1" max="2160" {...f.bind('tatHours')} error={f.errors.tatHours} />
+          <Input label="Order in department" type="number" min="0" max="9999" {...f.bind('sortOrder')} error={f.errors.sortOrder} hint="Lower numbers print first" />
+          <Textarea label="Interpretation (printed under the result)" {...f.bind('interpretation')} error={f.errors.interpretation} className="sm:col-span-2" hint="Entered and checked by your lab; printed as written" />
           <Textarea label="Description" {...f.bind('description')} className="sm:col-span-2" />
           {priceChanged && <Input label="Reason for price change" {...f.bind('priceReason')} className="sm:col-span-2" hint="Saved in the price history" />}
           <label className="flex items-center gap-2 text-sm"><input type="checkbox" className="accent-forest-800" checked={Boolean(f.values.isActive)} onChange={(e) => f.setValues((s) => ({ ...s, isActive: e.target.checked }))} /> Active (available for new orders)</label>
@@ -110,6 +134,126 @@ export function LabTests() {
         </form>
       </Modal>
     </>
+  );
+}
+
+const BLANK_TEST = { code: '', name: '', departmentId: '', description: '', sampleType: 'Blood', unit: '', refLow: '', refHigh: '', refText: '', price: '0', isActive: true,
+  method: '', instrument: '', interpretation: '', inputType: 'numeric', options: '', decimals: '', tatHours: '', sortOrder: '' };
+const INPUT_TYPE_OPTIONS = [{ value: 'numeric', label: 'Number' }, { value: 'text', label: 'Free text' }, { value: 'option', label: 'Dropdown (choices)' }];
+const splitOptions = (text) => String(text || '').split(/\r?\n|\|/).map((x) => x.trim()).filter(Boolean);
+
+/** Department master: rename, reorder, switch off; delete only when no test uses it. */
+function DepartmentsModal({ onClose }) {
+  const { data, loading, error, reload } = useApi(() => api.get('/lab/departments?all=true'), []);
+  const [rows, setRows] = useState([]);
+  const [busy, setBusy] = useState(null);
+  const [newDept, setNewDept] = useState({ name: '', sortOrder: '100' });
+  useEffect(() => { if (data) setRows(data.map((d) => ({ ...d, sortOrder: String(d.sortOrder) }))); }, [data]);
+  const set = (id, k, v) => setRows((rs) => rs.map((r) => (r.id === id ? { ...r, [k]: v } : r)));
+  const saveRow = async (r) => {
+    setBusy(r.id);
+    if (await withToast(() => api.put(`/lab/departments/${r.id}`, { name: r.name.trim(), sortOrder: Number(r.sortOrder || 0), isActive: r.isActive }), 'Department saved.')) reload();
+    setBusy(null);
+  };
+  const add = async () => {
+    setBusy('new');
+    if (await withToast(() => api.post('/lab/departments', { name: newDept.name.trim(), sortOrder: Number(newDept.sortOrder || 0) }), 'Department added.')) { setNewDept({ name: '', sortOrder: '100' }); reload(); }
+    setBusy(null);
+  };
+  const remove = async (r) => {
+    if (!confirmDelete(`Delete department “${r.name}”?`)) return;
+    setBusy(r.id);
+    if (await withToast(() => api.del(`/lab/departments/${r.id}`), 'Department deleted.')) reload();
+    setBusy(null);
+  };
+  return (
+    <Modal open onClose={onClose} size="lg" title="Lab departments" footer={<Button onClick={onClose}>Done</Button>}>
+      <p className="mb-3 text-sm text-muted">Reports group tests by department, in this order (lower numbers first). Switch a department off to hide it from new tests without changing old reports.</p>
+      {error && <Alert tone="error">{error.message}</Alert>}
+      {loading && !data ? <Skeleton className="h-32 w-full" /> : (
+        <div className="space-y-2">
+          {rows.map((r) => (
+            <div key={r.id} className="grid grid-cols-2 items-end gap-2 rounded-lg border border-line p-2 sm:grid-cols-12">
+              <Input label="Name" className="col-span-2 sm:col-span-5" value={r.name} onChange={(e) => set(r.id, 'name', e.target.value)} />
+              <Input label="Order" type="number" min="0" max="9999" className="sm:col-span-2" value={r.sortOrder} onChange={(e) => set(r.id, 'sortOrder', e.target.value)} />
+              <label className="mb-2 flex items-center gap-2 text-sm sm:col-span-2"><input type="checkbox" className="accent-forest-800" checked={r.isActive} onChange={(e) => set(r.id, 'isActive', e.target.checked)} /> Active</label>
+              <span className="mb-2 text-xs text-muted sm:col-span-1">{r.testCount} tests</span>
+              <div className="col-span-2 flex justify-end gap-1 sm:col-span-2">
+                <Button size="sm" variant="outline" loading={busy === r.id} onClick={() => saveRow(r)}>Save</Button>
+                <Button size="sm" variant="ghost" aria-label={`Delete ${r.name}`} title="Delete" disabled={r.testCount > 0} onClick={() => remove(r)}><LuTrash2 aria-hidden /></Button>
+              </div>
+            </div>
+          ))}
+          <div className="grid grid-cols-2 items-end gap-2 rounded-lg border border-dashed border-line p-2 sm:grid-cols-12">
+            <Input label="New department" className="col-span-2 sm:col-span-7" value={newDept.name} onChange={(e) => setNewDept((s) => ({ ...s, name: e.target.value }))} placeholder="e.g. Molecular Biology" />
+            <Input label="Order" type="number" min="0" max="9999" className="sm:col-span-2" value={newDept.sortOrder} onChange={(e) => setNewDept((s) => ({ ...s, sortOrder: e.target.value }))} />
+            <Button className="sm:col-span-3" variant="outline" loading={busy === 'new'} disabled={newDept.name.trim().length < 2} onClick={add}><LuPlus aria-hidden /> Add</Button>
+          </div>
+        </div>
+      )}
+    </Modal>
+  );
+}
+
+const IMPORT_COLUMNS = ['code', 'name', 'department', 'sampleType', 'unit', 'refLow', 'refHigh', 'refText', 'price', 'inputType', 'options', 'decimals', 'method', 'instrument', 'tatHours', 'interpretation'];
+const MAX_IMPORT_ROWS = 500;
+
+/** CSV import of the test catalogue: check first (nothing saved), then import. Codes already in the catalogue are skipped or updated. */
+function ImportTestsModal({ onClose }) {
+  const [rows, setRows] = useState(null);
+  const [fileName, setFileName] = useState('');
+  const [mode, setMode] = useState('skip');
+  const [check, setCheck] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  const template = () => downloadText('lab-tests-template.csv', `${toCsv([IMPORT_COLUMNS,
+    ['GLU-F', 'Glucose fasting (example)', 'Biochemistry', 'Serum', 'mg/dL', '', '', '', '0', 'numeric', '', '0', '', '', '', ''],
+    ['HBSAG-EX', 'HBsAg (example)', 'Serology & Immunology', 'Serum', '', '', '', '', '0', 'option', 'Reactive|Non-reactive', '', '', '', '', '']])}\r\n`);
+  const readFile = async (file) => {
+    setErr(null); setCheck(null); setRows(null); setFileName(file?.name || '');
+    if (!file) return;
+    if (file.size > 2 * 1024 * 1024) { setErr('The file is larger than 2 MB.'); return; }
+    const list = csvToObjects(await file.text());
+    if (!list.length) { setErr('No rows found. The first line must be the column names (download the template).'); return; }
+    if (list.length > MAX_IMPORT_ROWS) { setErr(`The file has ${list.length} rows; import at most ${MAX_IMPORT_ROWS} at a time.`); return; }
+    setRows(list);
+  };
+  const run = async (dryRun) => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.post('/lab/tests/import', { rows, mode, dryRun });
+      if (dryRun) setCheck(r.data);
+      else { notify.success(`Imported: ${r.data.create} new, ${r.data.update} updated, ${r.data.skip} skipped.`); onClose(true); }
+    } catch (e) { setErr(e.message); if (e.details) setCheck((c) => ({ ...(c || {}), errors: e.details.map((d) => ({ line: d.path, message: d.message })) })); }
+    finally { setBusy(false); }
+  };
+  const canImport = check && !check.errors?.length && (check.create + check.update) > 0;
+  return (
+    <Modal open onClose={() => onClose(false)} size="lg" title="Import tests from CSV"
+      footer={<><Button variant="ghost" onClick={() => onClose(false)}>Cancel</Button>
+        <Button variant="outline" disabled={!rows} loading={busy && !check} onClick={() => run(true)}>Check file</Button>
+        <Button disabled={!canImport} loading={busy && Boolean(check)} onClick={() => run(false)}>Import</Button></>}>
+      <div className="space-y-3 text-sm">
+        <p className="text-muted">Upload a CSV with one test per line. Reference ranges, units and interpretations are imported exactly as written — your lab must check them before use.
+          Missing departments are created. Panel parameters are added afterwards from the test list.</p>
+        <Button size="sm" variant="ghost" onClick={template}><LuDownload aria-hidden /> Download template</Button>
+        <Input label="CSV file" type="file" accept=".csv,text/csv" onChange={(e) => readFile(e.target.files?.[0])} hint={fileName && rows ? `${fileName}: ${rows.length} rows` : `Up to ${MAX_IMPORT_ROWS} rows, 2 MB`} />
+        <Select label="Codes that already exist" value={mode} onChange={(e) => { setMode(e.target.value); setCheck(null); }}
+          options={[{ value: 'skip', label: 'Skip them (keep my current tests)' }, { value: 'update', label: 'Update them from the file' }]} />
+        {check && (
+          <Alert tone={check.errors?.length ? 'error' : 'success'}>
+            {check.errors?.length ? `${check.errors.length} line(s) need fixing — nothing will be saved until the file is correct.`
+              : `Ready: ${check.create} new, ${check.update} to update, ${check.skip} skipped.${check.newDepartments?.length ? ` New departments: ${check.newDepartments.join(', ')}.` : ''}`}
+          </Alert>
+        )}
+        {check?.errors?.length > 0 && (
+          <ul className="max-h-48 space-y-1 overflow-y-auto rounded-lg border border-line p-2 text-xs">
+            {check.errors.map((e, i) => <li key={i}><span className="font-semibold">{typeof e.line === 'number' ? `Line ${e.line}` : e.line}{e.code ? ` (${e.code})` : ''}:</span> {e.message}</li>)}
+          </ul>
+        )}
+        {err && !check?.errors?.length && <Alert tone="error">{err}</Alert>}
+      </div>
+    </Modal>
   );
 }
 

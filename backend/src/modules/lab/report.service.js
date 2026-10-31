@@ -1,6 +1,6 @@
 // Builds the printable lab report (verified results only) for staff sharing and the public patient link.
 import { db } from '../../db/pool.js';
-import { PARAMS_SQL, attachParameters } from './lab.shared.js';
+import { PARAMS_SQL, attachParameters, itemsSql } from './lab.shared.js';
 
 /** Returns the report of a VERIFIED order of this tenant, or null. Contains no contact details. */
 export async function loadVerifiedReport(tenantId, orderId) {
@@ -16,10 +16,7 @@ export async function loadVerifiedReport(tenantId, orderId) {
     LEFT JOIN hms.StaffMembers s ON s.TenantId = o.TenantId AND s.StaffId = o.DoctorId
     LEFT JOIN hms.Users v ON v.TenantId = o.TenantId AND v.UserId = o.VerifiedByUserId
     WHERE o.TenantId = @tid AND o.LabOrderId = @id;
-    SELECT i.LabOrderItemId AS id, i.TestName AS testName, i.Unit AS unit, i.RefLow AS refLow, i.RefHigh AS refHigh, i.RefText AS refText,
-           i.ResultValue AS resultValue, i.Flag AS flag, i.PackageName AS packageName, lt.Department AS department
-    FROM hms.LabOrderItems i LEFT JOIN hms.LabTests lt ON lt.TenantId = i.TenantId AND lt.LabTestId = i.LabTestId
-    WHERE i.TenantId = @tid AND i.LabOrderId = @id ORDER BY i.PackageName, i.LabOrderItemId;
+    ${itemsSql({ withPrice: false })}
     ${PARAMS_SQL}`, { tid: tenantId, id: orderId });
   const o = orders[0];
   if (!o || o.Status !== 'verified') return null;

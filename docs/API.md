@@ -78,7 +78,7 @@ Deletion rules: master data (departments, beds, wards, tests, medicines, supplie
 
 | Endpoint | Permission (feature) |
 |---|---|
-| GET `/lab/departments`; GET `/lab/tests?q&department&all`; GET `/lab/packages?q&all`; GET `/lab/packages/:id`; GET `/lab/referrals` | lab.read (laboratory) |
+| GET `/lab/departments?all` (objects `{ id, name, sortOrder, isActive, testCount }`); GET `/lab/tests?q&department&departmentId&all`; GET `/lab/packages?q&all`; GET `/lab/packages/:id`; GET `/lab/referrals` | lab.read (laboratory) |
 | POST/PUT/DELETE `/lab/tests[/:id]`, `/lab/packages[/:id]`, `/lab/referrals[/:id]` | lab.configure |
 | GET `/lab/tests/:id/prices`, `/lab/packages/:id/prices` · POST same `{ price, reason }` | lab.read · lab.configure |
 | POST `/lab/orders` `{ patientId, testIds[], packageIds[], referralDoctorId?, discount, addToBill, payment?{amount,method} }` → own finalised invoice + optional receipt (OPD-linked orders go on the patient's draft bill) | lab.write (+ billing.write for billing) |
@@ -172,3 +172,11 @@ Tenant-scoped like everything else; nested routers refuse requests without a hos
 - `GET /admin/revenue` (MRR, ARR, ARPA, by plan, 12 months), `GET /admin/monitoring`, `GET /admin/login-history?q&type&result&tenantId&page`.
 - `GET /admin/support/tickets?status=waiting|…&q&page`, `GET /admin/support/tickets/:id`, `POST /admin/support/tickets/:id/messages { body, internal?, resolve? }`, `PATCH /admin/support/tickets/:id { status?, priority?, assignedToId? }`, `GET /admin/team`.
 - `GET|POST /admin/groups`, `PUT|DELETE /admin/groups/:id`, `PUT /admin/tenants/:id/group { groupId|null, branchName? }` (`409 BRANCH_LIMIT`). Plans accept `trialDays` (0–90); settings accept `support.email`.
+
+## Lab upgrade — chunk 2: master data (migration 015)
+
+- **Departments** — `GET /lab/departments?all=true` (`lab.read`) → `[{ id, name, sortOrder, isActive, testCount }]` in report order. `POST /lab/departments { name, sortOrder?, isActive? }`, `PUT /lab/departments/:id` (same body; renaming also updates the department text on this hospital's tests), `DELETE /lab/departments/:id` (`409 IN_USE` while any test uses it — switch it off instead). Duplicate name → `409 DUPLICATE`. All `lab.configure`, audit-logged.
+- **Test fields** — `POST|PUT /lab/tests[/:id]` also take `departmentId` (must be one of this hospital's active departments; `department` text is still accepted and matched by name), `method`, `instrument`, `interpretation` (≤ 2000), `inputType: numeric|text|option`, `options: string[]` (required for `option`, ≤ 30, no `|`, no duplicates), `decimals` (0–6), `tatHours` (1–2160), `sortOrder` (0–9999). `GET /lab/tests` returns them (`options` as an array).
+- **Parameters** — `PUT /lab/tests/:id/parameters` rows also take `inputType`, `options`, `decimals`, `isHeading` (heading rows print a sub-heading and take no result; their unit/range are cleared).
+- **CSV import** — `POST /lab/tests/import { rows: [{ code, name, department?, sampletype?, unit?, reflow?, refhigh?, reftext?, price?, inputtype?, options? (| or ;), decimals?, method?, instrument?, tathours?, interpretation? }], mode: skip|update, dryRun? }` (`lab.configure`, ≤ 500 rows). The browser parses the CSV. Dry run → `{ create, update, skip, newDepartments, errors: [{ line, code, message }] }`, nothing saved. A real import with any bad row → `400` with `details: [{ path: 'line N', message }]` and nothing saved; otherwise one transaction, missing departments created, price changes recorded in price history, one audit entry.
+- **Orders & results** — each order line snapshots department name/order, method, instrument, interpretation, input type, options and decimals (parameters likewise), so later catalogue edits never change an order. `GET /lab/orders/:id` and the report return lines in report order with those fields. `PUT /lab/orders/:id/results` checks values against the snapshot: option results must be one of the choices (stored with the configured spelling, never range-flagged), heading rows refuse a value (`400`), only plain numbers are flagged against the range; a panel is complete when every non-heading parameter has a value.

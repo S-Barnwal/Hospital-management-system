@@ -11,7 +11,7 @@ import { formatPhone } from '../../lib/contact.js';
 import { Alert, Button, Card, EmptyState, Input, Modal, PageHeader, Skeleton, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
 import { StaffSelect } from '../../components/Pickers.jsx';
 
-const blankParam = { name: '', unit: '', refLow: '', refHigh: '', refText: '' };
+const blankParam = { name: '', unit: '', refLow: '', refHigh: '', refText: '', inputType: 'numeric', options: '', decimals: '', isHeading: false };
 
 /** Edit the parameters of a test (CBC → Hb, WBC …). An empty list makes it a single-result test again. */
 export function ParametersModal({ test, onClose }) {
@@ -21,7 +21,8 @@ export function ParametersModal({ test, onClose }) {
   useEffect(() => {
     if (!test) return;
     setRows(null); setErr(null);
-    api.get(`/lab/tests/${test.id}/parameters`).then((r) => setRows(r.data.map((p) => ({ ...p, unit: p.unit ?? '', refLow: p.refLow ?? '', refHigh: p.refHigh ?? '', refText: p.refText ?? '' }))))
+    api.get(`/lab/tests/${test.id}/parameters`).then((r) => setRows(r.data.map((p) => ({ ...p, unit: p.unit ?? '', refLow: p.refLow ?? '', refHigh: p.refHigh ?? '', refText: p.refText ?? '',
+      inputType: p.inputType || 'numeric', options: (p.options || []).join(' | '), decimals: p.decimals ?? '', isHeading: Boolean(p.isHeading) }))))
       .catch((e) => setErr(e.message));
   }, [test]);
   if (!test) return null;
@@ -32,7 +33,8 @@ export function ParametersModal({ test, onClose }) {
     try {
       await api.put(`/lab/tests/${test.id}/parameters`, { parameters: rows.filter((r) => r.name.trim()).map((r) => ({
         ...(r.id ? { id: r.id } : {}), name: r.name.trim(), unit: r.unit.trim() || null, refLow: r.refLow === '' ? null : Number(r.refLow),
-        refHigh: r.refHigh === '' ? null : Number(r.refHigh), refText: r.refText.trim() || null })) });
+        refHigh: r.refHigh === '' ? null : Number(r.refHigh), refText: r.refText.trim() || null, isHeading: r.isHeading, inputType: r.inputType,
+        options: r.inputType === 'option' ? r.options.split('|').map((x) => x.trim()).filter(Boolean) : [], decimals: r.decimals === '' ? null : Number(r.decimals) })) });
       notify.success('Parameters saved. New orders of this test will use them.');
       onClose(true);
     } catch (e) { setErr(e.details?.[0] ? `${e.message} ${e.details[0].message}` : e.message); } finally { setBusy(false); }
@@ -45,16 +47,31 @@ export function ParametersModal({ test, onClose }) {
       {!rows ? <Skeleton className="h-32 w-full" /> : (
         <div className="space-y-2">
           {rows.map((r, i) => (
-            <div key={r.id ?? `n${i}`} className="grid grid-cols-2 gap-2 rounded-lg border border-line p-2 sm:grid-cols-12 sm:items-end">
-              <Input label="Parameter" className="col-span-2 sm:col-span-4" value={r.name} onChange={(e) => set(i, 'name', e.target.value)} />
-              <Input label="Unit" className="sm:col-span-2" value={r.unit} onChange={(e) => set(i, 'unit', e.target.value)} />
-              <Input label="Low" type="number" step="any" className="sm:col-span-1" value={r.refLow} onChange={(e) => set(i, 'refLow', e.target.value)} />
-              <Input label="High" type="number" step="any" className="sm:col-span-1" value={r.refHigh} onChange={(e) => set(i, 'refHigh', e.target.value)} />
-              <Input label="Reference text" className="col-span-2 sm:col-span-2" value={r.refText} onChange={(e) => set(i, 'refText', e.target.value)} placeholder="e.g. Negative" />
-              <div className="col-span-2 flex justify-end gap-1 sm:col-span-2">
-                <Button size="sm" variant="ghost" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Move up"><LuArrowUp aria-hidden /></Button>
-                <Button size="sm" variant="ghost" disabled={i === rows.length - 1} onClick={() => move(i, 1)} aria-label="Move down"><LuArrowDown aria-hidden /></Button>
-                <Button size="sm" variant="ghost" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} aria-label="Remove"><LuTrash2 aria-hidden /></Button>
+            <div key={r.id ?? `n${i}`} className="space-y-2 rounded-lg border border-line p-2">
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-12 sm:items-end">
+                <Input label={r.isHeading ? 'Heading' : 'Parameter'} className="col-span-2 sm:col-span-4" value={r.name} onChange={(e) => set(i, 'name', e.target.value)} />
+                {r.isHeading ? <p className="col-span-2 self-center text-xs text-muted sm:col-span-8">Printed as a sub-heading (e.g. “Differential count”); takes no result.</p> : <>
+                  <Input label="Unit" className="sm:col-span-2" value={r.unit} onChange={(e) => set(i, 'unit', e.target.value)} />
+                  <Input label="Low" type="number" step="any" className="sm:col-span-2" value={r.refLow} onChange={(e) => set(i, 'refLow', e.target.value)} />
+                  <Input label="High" type="number" step="any" className="sm:col-span-2" value={r.refHigh} onChange={(e) => set(i, 'refHigh', e.target.value)} />
+                  <Input label="Reference text" className="col-span-2 sm:col-span-2" value={r.refText} onChange={(e) => set(i, 'refText', e.target.value)} placeholder="e.g. Negative" />
+                </>}
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                {!r.isHeading && <>
+                  <label className="w-36"><span className="label">Result type</span>
+                    <select className="input" value={r.inputType} onChange={(e) => set(i, 'inputType', e.target.value)} aria-label={`Result type of ${r.name || 'parameter'}`}>
+                      <option value="numeric">Number</option><option value="text">Free text</option><option value="option">Dropdown</option>
+                    </select></label>
+                  <Input label="Decimals" type="number" min="0" max="6" className="w-24" value={r.decimals} onChange={(e) => set(i, 'decimals', e.target.value)} />
+                  {r.inputType === 'option' && <Input label="Choices (separate with |)" className="min-w-48 flex-1" value={r.options} onChange={(e) => set(i, 'options', e.target.value)} placeholder="Positive | Negative" />}
+                </>}
+                <label className="mb-2 flex items-center gap-2 text-xs"><input type="checkbox" className="accent-forest-800" checked={r.isHeading} onChange={(e) => set(i, 'isHeading', e.target.checked)} /> Heading row</label>
+                <div className="ml-auto flex gap-1">
+                  <Button size="sm" variant="ghost" disabled={i === 0} onClick={() => move(i, -1)} aria-label="Move up"><LuArrowUp aria-hidden /></Button>
+                  <Button size="sm" variant="ghost" disabled={i === rows.length - 1} onClick={() => move(i, 1)} aria-label="Move down"><LuArrowDown aria-hidden /></Button>
+                  <Button size="sm" variant="ghost" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} aria-label="Remove"><LuTrash2 aria-hidden /></Button>
+                </div>
               </div>
             </div>
           ))}

@@ -11,12 +11,35 @@ import { PatientPicker, DoctorSelect } from '../../components/Pickers.jsx';
 import { PaymentModal } from './Billing.jsx';
 import { formatPhone } from '../../lib/contact.js';
 import PhoneInput from '../../components/PhoneInput.jsx';
+import { formatResult, groupByDepartment, methodLine, refRange } from '../../lib/labReport.js';
 
 export const LAB_STATUSES = ['ordered', 'sample_collected', 'completed', 'verified', 'cancelled'];
 export const PAYMENT_STATUSES = ['unpaid', 'partial', 'paid', 'on_bill', 'unbilled', 'cancelled'];
 const PAY_LABEL = { unpaid: 'Unpaid', partial: 'Partial', paid: 'Paid', on_bill: 'On patient bill', unbilled: 'Not billed', cancelled: 'Bill cancelled' };
 export const PayBadge = ({ status }) => <StatusBadge status={status === 'on_bill' ? 'on_bill' : status} />;
 const FLAG_TONE = { normal: 'green', low: 'blue', high: 'red', abnormal: 'red' };
+
+/** Result box: a dropdown for option results, otherwise a text box (numeric results may be written as "<0.5"). */
+function ResultInput({ row, value, onChange, label }) {
+  if (row.inputType === 'option' && row.options?.length) {
+    return (
+      <select className="input print:hidden" value={value ?? ''} onChange={(e) => onChange(e.target.value)} aria-label={label}>
+        <option value="">—</option>
+        {row.options.map((o) => <option key={o} value={o}>{o}</option>)}
+      </select>
+    );
+  }
+  return <input className="input print:hidden" value={value ?? ''} onChange={(e) => onChange(e.target.value)} aria-label={label}
+    inputMode={row.inputType === 'numeric' ? 'decimal' : 'text'} />;
+}
+
+/** Package name and method / instrument, shown in small type under the test name. */
+function TestMeta({ i }) {
+  const line = [i.packageName, methodLine(i)].filter(Boolean).join(' · ');
+  return line ? <span className="block text-xs font-normal text-muted">{line}</span> : null;
+}
+
+const ShownResult = ({ r }) => <span className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</span>;
 const METHODS = ['cash', 'upi', 'card', 'bank', 'other'];
 const toPaise = (v) => Math.round(Number(v || 0) * 100);
 
@@ -233,7 +256,7 @@ export function LabOrderDetail() {
     if (!o) return;
     // Single-value tests are keyed by item id, panel parameters by `p<id>`.
     setValues(Object.fromEntries(o.items.flatMap((i) => (i.parameters?.length
-      ? i.parameters.map((x) => [`p${x.id}`, x.resultValue ?? '']) : [[i.id, i.resultValue ?? '']]))));
+      ? i.parameters.filter((x) => !x.isHeading).map((x) => [`p${x.id}`, x.resultValue ?? '']) : [[i.id, i.resultValue ?? '']]))));
   }, [o]);
   if (error) return <Alert tone="error">{error.status === 404 ? 'Lab order not found.' : error.message}</Alert>;
   if (loading && !o) return <Skeleton className="h-64 w-full" />;
@@ -244,7 +267,7 @@ export function LabOrderDetail() {
   const canEnter = can('lab.write') && ['sample_collected', 'completed'].includes(o.status);
   const p = o.patient;
   const a = o.amounts;
-  const groups = o.items.reduce((acc, i) => { const k = i.packageName || i.department || 'Tests'; (acc[k] ||= []).push(i); return acc; }, {});
+  const groups = groupByDepartment(o.items);
   const canPay = o.bill?.own && o.bill.status === 'finalized' && Number(a.balance) > 0 && can('billing.write') && hasFeature('billing');
 
   return (
@@ -255,7 +278,7 @@ export function LabOrderDetail() {
           {o.status === 'ordered' && can('lab.write') && <Button onClick={() => run('collect', () => api.post(`/lab/orders/${id}/status`, { status: 'sample_collected' }), 'All samples marked collected.')} loading={busy === 'collect'}><LuTestTubes aria-hidden /> Collect all samples</Button>}
           {canEnter && <Button variant="outline" loading={busy === 'save'} onClick={() => run('save', () => api.put(`/lab/orders/${id}/results`, {
             results: o.items.filter((i) => !i.parameters?.length).map((i) => ({ itemId: i.id, value: String(values[i.id] ?? '') })),
-            parameters: o.items.flatMap((i) => (i.parameters || []).map((x) => ({ id: x.id, value: String(values[`p${x.id}`] ?? '') }))),
+            parameters: o.items.flatMap((i) => (i.parameters || []).filter((x) => !x.isHeading).map((x) => ({ id: x.id, value: String(values[`p${x.id}`] ?? '') }))),
           }), 'Results saved.')}><LuSave aria-hidden /> Save results</Button>}
           {o.status === 'completed' && can('lab.verify') && <Button loading={busy === 'verify'} onClick={() => run('verify', () => api.post(`/lab/orders/${id}/verify`), 'Verified. Results are now locked.')}><LuBadgeCheck aria-hidden /> Verify</Button>}
           {canPay && <Button variant="outline" onClick={() => setPayOpen(true)}><LuIndianRupee aria-hidden /> Collect payment</Button>}
@@ -346,35 +369,42 @@ export function LabOrderDetail() {
         <div className="relative overflow-x-auto">
           <table className="table-base">
             <thead className="bg-forest-50/40"><tr><th>Test</th><th>Result</th><th>Unit</th><th>Reference range</th><th>Flag</th></tr></thead>
-            {Object.entries(groups).map(([group, items]) => (
+            {groups.map(([group, items]) => (
               <tbody key={group} className="divide-y divide-line">
                 <tr><td colSpan={5} className="bg-ivory text-xs font-bold uppercase tracking-wider text-forest-800">{group}</td></tr>
-                {items.map((i) => (i.parameters?.length ? (
+                {items.map((i) => (
                   <Fragment key={i.id}>
-                    <tr><td colSpan={4} className="font-semibold">{i.testName}</td><td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : ''}</td></tr>
-                    {i.parameters.map((x) => (
-                      <tr key={`p${x.id}`}>
-                        <td className="pl-8 text-sm">{x.name}</td>
+                    {i.parameters?.length ? (
+                      <>
+                        <tr><td colSpan={4} className="font-semibold">{i.testName}<TestMeta i={i} /></td><td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : ''}</td></tr>
+                        {i.parameters.map((x) => (x.isHeading ? (
+                          <tr key={`p${x.id}`}><td colSpan={5} className="pl-6 text-xs font-bold uppercase tracking-wide text-muted">{x.name}</td></tr>
+                        ) : (
+                          <tr key={`p${x.id}`}>
+                            <td className="pl-8 text-sm">{x.name}</td>
+                            <td className="min-w-36">{canEnter
+                              ? <ResultInput row={x} value={values[`p${x.id}`]} onChange={(v) => setValues((st) => ({ ...st, [`p${x.id}`]: v }))} label={`${i.testName}: ${x.name}`} />
+                              : <ShownResult r={x} />}</td>
+                            <td>{x.unit ?? ''}</td>
+                            <td className="text-xs">{refRange(x)}</td>
+                            <td>{x.flag ? <Badge tone={FLAG_TONE[x.flag]}>{x.flag}</Badge> : '—'}</td>
+                          </tr>
+                        )))}
+                      </>
+                    ) : (
+                      <tr>
+                        <td className="font-medium">{i.testName}<TestMeta i={i} /></td>
                         <td className="min-w-36">{canEnter
-                          ? <input className="input print:hidden" value={values[`p${x.id}`] ?? ''} onChange={(e) => setValues((st) => ({ ...st, [`p${x.id}`]: e.target.value }))} aria-label={`${i.testName}: ${x.name}`} />
-                          : <span className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(x.flag) && 'text-red-700')}>{x.resultValue ?? '—'}</span>}</td>
-                        <td>{x.unit ?? ''}</td>
-                        <td className="text-xs">{x.refLow != null || x.refHigh != null ? `${x.refLow ?? ''} – ${x.refHigh ?? ''}` : x.refText ?? '—'}</td>
-                        <td>{x.flag ? <Badge tone={FLAG_TONE[x.flag]}>{x.flag}</Badge> : '—'}</td>
+                          ? <ResultInput row={i} value={values[i.id]} onChange={(v) => setValues((s) => ({ ...s, [i.id]: v }))} label={`Result for ${i.testName}`} />
+                          : <ShownResult r={i} />}</td>
+                        <td>{i.unit ?? ''}</td>
+                        <td className="text-xs">{refRange(i)}</td>
+                        <td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : '—'}</td>
                       </tr>
-                    ))}
+                    )}
+                    {i.interpretation && <tr><td colSpan={5} className="whitespace-pre-line pl-8 text-xs text-muted"><span className="font-semibold text-ink">Interpretation: </span>{i.interpretation}</td></tr>}
                   </Fragment>
-                ) : (
-                  <tr key={i.id}>
-                    <td className="font-medium">{i.testName}</td>
-                    <td className="min-w-36">{canEnter
-                      ? <input className="input print:hidden" value={values[i.id] ?? ''} onChange={(e) => setValues((s) => ({ ...s, [i.id]: e.target.value }))} aria-label={`Result for ${i.testName}`} />
-                      : <span className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(i.flag) && 'text-red-700')}>{i.resultValue ?? '—'}</span>}</td>
-                    <td>{i.unit ?? ''}</td>
-                    <td className="text-xs">{i.refLow != null || i.refHigh != null ? `${i.refLow ?? ''} – ${i.refHigh ?? ''}` : i.refText ?? '—'}</td>
-                    <td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : '—'}</td>
-                  </tr>
-                )))}
+                ))}
               </tbody>
             ))}
           </table>
