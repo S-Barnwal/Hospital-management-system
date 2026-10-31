@@ -6,11 +6,11 @@ import { LuShieldCheck, LuPrinter, LuLock } from 'react-icons/lu';
 import { api } from '../../lib/api.js';
 import { useApi } from '../../lib/hooks.js';
 import { age, dateTime, fullName, titleCase } from '../../lib/format.js';
-import { Alert, Badge, Button, Card, Input, Skeleton, cx } from '../../components/ui.jsx';
+import { Alert, Button, Card, Input, Skeleton, cx } from '../../components/ui.jsx';
 import { LogoMark } from '../../components/Logo.jsx';
 import { formatResult, groupByDepartment, methodLine, refRange } from '../../lib/labReport.js';
+import { LabFlag, isOutOfRange } from '../../components/LabFlag.jsx';
 
-const FLAG_TONE = { normal: 'green', low: 'blue', high: 'red', abnormal: 'red' };
 
 function Report({ r }) {
   const tz = r.hospital.timezone;
@@ -59,10 +59,10 @@ function ResultRow({ name, r, indent = false }) {
   return (
     <tr>
       <td className={indent ? 'pl-8 text-sm' : 'font-medium'}>{name}</td>
-      <td className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</td>
+      <td className={cx('font-semibold', isOutOfRange(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</td>
       <td>{r.unit ?? ''}</td>
-      <td className="text-xs">{refRange(r)}</td>
-      <td>{r.flag ? <Badge tone={FLAG_TONE[r.flag]}>{r.flag}</Badge> : '—'}</td>
+      <td className="text-xs">{refRange(r)}{r.rangeLabel && <span className="block text-[11px] text-muted">{r.rangeLabel}</span>}</td>
+      <td><LabFlag flag={r.flag} /></td>
     </tr>
   );
 }

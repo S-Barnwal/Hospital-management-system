@@ -24,7 +24,8 @@ router.get('/tests/:id/parameters', requirePermission('lab.read'), asyncHandler(
   const test = await db.one('SELECT LabTestId FROM hms.LabTests WHERE TenantId = @tid AND LabTestId = @id', { tid: req.ctx.tenantId, id });
   if (!test) throw notFound('Test not found.');
   const rows = await db.query(`SELECT ParameterId AS id, Name AS name, Unit AS unit, RefLow AS refLow, RefHigh AS refHigh, RefText AS refText, SortOrder AS sortOrder,
-                                      InputType AS inputType, Options AS options, Decimals AS decimals, IsHeading AS isHeading
+                                      InputType AS inputType, Options AS options, Decimals AS decimals, IsHeading AS isHeading,
+                                      CriticalLow AS criticalLow, CriticalHigh AS criticalHigh
                                FROM hms.LabTestParameters WHERE TenantId = @tid AND LabTestId = @id AND IsActive = 1 ORDER BY SortOrder, ParameterId`,
   { tid: req.ctx.tenantId, id });
   res.json({ data: rows.map((r) => ({ ...r, options: unpackOptions(r.options), isHeading: Boolean(r.isHeading) })) });
@@ -41,13 +42,15 @@ router.put('/tests/:id/parameters', requirePermission('lab.configure'),
       refLow: num, refHigh: num, refText: z.string().trim().max(100).nullable().optional(),
       inputType: z.enum(['numeric', 'text', 'option']).default('numeric'), options: z.array(z.string().max(60)).max(30).nullable().optional(),
       decimals: z.union([z.literal('').transform(() => null), z.null(), z.coerce.number().int().min(0).max(6)]).optional(), isHeading: z.boolean().default(false),
+      criticalLow: num, criticalHigh: num,
     }).strict().refine((p) => p.refLow == null || p.refHigh == null || p.refHigh >= p.refLow, { message: 'High limit must be ≥ low limit', path: ['refHigh'] })
+      .refine((p) => p.criticalLow == null || p.criticalHigh == null || p.criticalHigh > p.criticalLow, { message: 'Critical high must be above critical low', path: ['criticalHigh'] })
       .transform((p, ctx) => {
         let options = null;
         try { options = packOptions(p.options ?? []); } catch (e) { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: e.message }); return z.NEVER; }
         if (!p.isHeading && p.inputType === 'option' && !options) { ctx.addIssue({ code: z.ZodIssueCode.custom, path: ['options'], message: `${p.name}: add the dropdown choices.` }); return z.NEVER; }
         // A heading row only prints its name; it carries no unit, range or result settings.
-        return p.isHeading ? { ...p, unit: null, refLow: null, refHigh: null, refText: null, inputType: 'text', options: null, decimals: null }
+        return p.isHeading ? { ...p, unit: null, refLow: null, refHigh: null, refText: null, inputType: 'text', options: null, decimals: null, criticalLow: null, criticalHigh: null }
           : { ...p, options: p.inputType === 'option' ? options : null };
       }))
       .max(60),
@@ -66,16 +69,17 @@ router.put('/tests/:id/parameters', requirePermission('lab.configure'),
         order += 1;
         const params = { tid: req.ctx.tenantId, test: id, name: p.name, unit: p.unit || null, lo: p.refLow == null ? null : t.dec(p.refLow, 12, 4),
           hi: p.refHigh == null ? null : t.dec(p.refHigh, 12, 4), txt: p.refText || null, sort: order,
-          itype: p.inputType, opts: p.options, dec: p.decimals ?? null, head: p.isHeading };
+          itype: p.inputType, opts: p.options, dec: p.decimals ?? null, head: p.isHeading,
+          cl: p.criticalLow == null ? null : t.dec(p.criticalLow, 12, 4), ch: p.criticalHigh == null ? null : t.dec(p.criticalHigh, 12, 4) };
         if (p.id) {
           if (!known.has(p.id)) throw badRequest('A parameter does not belong to this test.');
           keep.add(p.id);
           await tx.exec(`UPDATE hms.LabTestParameters SET Name = @name, Unit = @unit, RefLow = @lo, RefHigh = @hi, RefText = @txt, SortOrder = @sort,
-                           InputType = @itype, Options = @opts, Decimals = @dec, IsHeading = @head
+                           InputType = @itype, Options = @opts, Decimals = @dec, IsHeading = @head, CriticalLow = @cl, CriticalHigh = @ch
                          WHERE TenantId = @tid AND LabTestId = @test AND ParameterId = @pid`, { ...params, pid: p.id });
         } else {
-          await tx.exec(`INSERT INTO hms.LabTestParameters (TenantId, LabTestId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading)
-                         VALUES (@tid, @test, @name, @unit, @lo, @hi, @txt, @sort, @itype, @opts, @dec, @head)`, params);
+          await tx.exec(`INSERT INTO hms.LabTestParameters (TenantId, LabTestId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading, CriticalLow, CriticalHigh)
+                         VALUES (@tid, @test, @name, @unit, @lo, @hi, @txt, @sort, @itype, @opts, @dec, @head, @cl, @ch)`, params);
         }
       }
       for (const pid of known) {

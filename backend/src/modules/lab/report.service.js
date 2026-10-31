@@ -2,7 +2,11 @@
 import { db } from '../../db/pool.js';
 import { PARAMS_SQL, attachParameters, itemsSql } from './lab.shared.js';
 
-/** Returns the report of a VERIFIED order of this tenant, or null. Contains no contact details. */
+// Critical-alert bookkeeping (who acknowledged, when) is for staff only and never reaches the patient's report.
+const STAFF_ONLY = new Set(['criticalAt', 'criticalAckAt', 'criticalAckBy']);
+const withoutStaffFields = (o) => Object.fromEntries(Object.entries(o).filter(([k]) => !STAFF_ONLY.has(k)));
+
+/** Returns the report of a VERIFIED order of this tenant, or null. Contains no contact details and no staff alert data. */
 export async function loadVerifiedReport(tenantId, orderId) {
   const [orders, items, params] = await db.many(`
     SELECT o.LabOrderId, o.OrderNumber, o.OrderedAt, o.VerifiedAt, o.Status, p.PatientNumber, p.FirstName, p.LastName, p.Gender,
@@ -24,6 +28,6 @@ export async function loadVerifiedReport(tenantId, orderId) {
     hospital: { name: o.HospitalName, address: o.HospitalAddress, phone: o.HospitalPhone, timezone: o.Timezone },
     order: { number: o.OrderNumber, orderedAt: o.OrderedAt, verifiedAt: o.VerifiedAt, verifiedBy: o.VerifiedBy, referredBy: o.ReferralName || o.DoctorName || null },
     patient: { patientNumber: o.PatientNumber, firstName: o.FirstName, lastName: o.LastName, gender: o.Gender, dateOfBirth: o.DateOfBirth },
-    items: attachParameters(items, params),
+    items: attachParameters(items, params).map((i) => ({ ...withoutStaffFields(i), parameters: i.parameters.map(withoutStaffFields) })),
   };
 }

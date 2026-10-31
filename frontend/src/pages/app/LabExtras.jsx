@@ -10,8 +10,9 @@ import { dateTime, fullName, money } from '../../lib/format.js';
 import { formatPhone } from '../../lib/contact.js';
 import { Alert, Button, Card, EmptyState, Input, Modal, PageHeader, Skeleton, StatusBadge, Textarea, cx } from '../../components/ui.jsx';
 import { StaffSelect } from '../../components/Pickers.jsx';
+import { isOutOfRange } from '../../components/LabFlag.jsx';
 
-const blankParam = { name: '', unit: '', refLow: '', refHigh: '', refText: '', inputType: 'numeric', options: '', decimals: '', isHeading: false };
+const blankParam = { name: '', unit: '', refLow: '', refHigh: '', refText: '', inputType: 'numeric', options: '', decimals: '', isHeading: false, criticalLow: '', criticalHigh: '' };
 
 /** Edit the parameters of a test (CBC → Hb, WBC …). An empty list makes it a single-result test again. */
 export function ParametersModal({ test, onClose }) {
@@ -22,7 +23,7 @@ export function ParametersModal({ test, onClose }) {
     if (!test) return;
     setRows(null); setErr(null);
     api.get(`/lab/tests/${test.id}/parameters`).then((r) => setRows(r.data.map((p) => ({ ...p, unit: p.unit ?? '', refLow: p.refLow ?? '', refHigh: p.refHigh ?? '', refText: p.refText ?? '',
-      inputType: p.inputType || 'numeric', options: (p.options || []).join(' | '), decimals: p.decimals ?? '', isHeading: Boolean(p.isHeading) }))))
+      inputType: p.inputType || 'numeric', options: (p.options || []).join(' | '), decimals: p.decimals ?? '', isHeading: Boolean(p.isHeading), criticalLow: p.criticalLow ?? '', criticalHigh: p.criticalHigh ?? '' }))))
       .catch((e) => setErr(e.message));
   }, [test]);
   if (!test) return null;
@@ -34,7 +35,8 @@ export function ParametersModal({ test, onClose }) {
       await api.put(`/lab/tests/${test.id}/parameters`, { parameters: rows.filter((r) => r.name.trim()).map((r) => ({
         ...(r.id ? { id: r.id } : {}), name: r.name.trim(), unit: r.unit.trim() || null, refLow: r.refLow === '' ? null : Number(r.refLow),
         refHigh: r.refHigh === '' ? null : Number(r.refHigh), refText: r.refText.trim() || null, isHeading: r.isHeading, inputType: r.inputType,
-        options: r.inputType === 'option' ? r.options.split('|').map((x) => x.trim()).filter(Boolean) : [], decimals: r.decimals === '' ? null : Number(r.decimals) })) });
+        options: r.inputType === 'option' ? r.options.split('|').map((x) => x.trim()).filter(Boolean) : [], decimals: r.decimals === '' ? null : Number(r.decimals),
+        criticalLow: r.criticalLow === '' ? null : Number(r.criticalLow), criticalHigh: r.criticalHigh === '' ? null : Number(r.criticalHigh) })) });
       notify.success('Parameters saved. New orders of this test will use them.');
       onClose(true);
     } catch (e) { setErr(e.details?.[0] ? `${e.message} ${e.details[0].message}` : e.message); } finally { setBusy(false); }
@@ -43,7 +45,7 @@ export function ParametersModal({ test, onClose }) {
     <Modal open onClose={() => onClose(false)} size="lg" title={`Parameters — ${test.name}`}
       footer={<><Button variant="ghost" onClick={() => onClose(false)}>Cancel</Button><Button onClick={save} loading={busy} disabled={!rows}>Save parameters</Button></>}>
       <p className="mb-3 text-sm text-muted">Give a test several parameters (for example a CBC: Haemoglobin, WBC, Platelets…). Each gets its own result, unit, normal range and flag.
-        Orders already placed keep the parameters they were ordered with.</p>
+        The range here is the default; add age / gender ranges with the “Ranges” button. Orders already placed keep the parameters they were ordered with.</p>
       {!rows ? <Skeleton className="h-32 w-full" /> : (
         <div className="space-y-2">
           {rows.map((r, i) => (
@@ -64,6 +66,10 @@ export function ParametersModal({ test, onClose }) {
                       <option value="numeric">Number</option><option value="text">Free text</option><option value="option">Dropdown</option>
                     </select></label>
                   <Input label="Decimals" type="number" min="0" max="6" className="w-24" value={r.decimals} onChange={(e) => set(i, 'decimals', e.target.value)} />
+                  {r.inputType === 'numeric' && <>
+                    <Input label="Critical low" type="number" step="any" className="w-28" value={r.criticalLow} onChange={(e) => set(i, 'criticalLow', e.target.value)} />
+                    <Input label="Critical high" type="number" step="any" className="w-28" value={r.criticalHigh} onChange={(e) => set(i, 'criticalHigh', e.target.value)} />
+                  </>}
                   {r.inputType === 'option' && <Input label="Choices (separate with |)" className="min-w-48 flex-1" value={r.options} onChange={(e) => set(i, 'options', e.target.value)} placeholder="Positive | Negative" />}
                 </>}
                 <label className="mb-2 flex items-center gap-2 text-xs"><input type="checkbox" className="accent-forest-800" checked={r.isHeading} onChange={(e) => set(i, 'isHeading', e.target.checked)} /> Heading row</label>
@@ -166,7 +172,7 @@ function TrendChart({ s }) {
     <svg viewBox={`0 0 ${w} ${h}`} className="h-20 w-full" role="img" aria-label={`${s.name} trend`}>
       {s.refLow != null && s.refHigh != null && <rect x={0} width={w} y={y(Number(s.refHigh))} height={Math.max(1, y(Number(s.refLow)) - y(Number(s.refHigh)))} className="fill-forest-50" />}
       <polyline fill="none" strokeWidth="2" className="stroke-forest-700" points={s.points.map((p, i) => `${x(i)},${y(p.value)}`).join(' ')} />
-      {s.points.map((p, i) => <circle key={i} cx={x(i)} cy={y(p.value)} r="3" className={['high', 'low', 'abnormal'].includes(p.flag) ? 'fill-red-600' : 'fill-forest-700'} />)}
+      {s.points.map((p, i) => <circle key={i} cx={x(i)} cy={y(p.value)} r="3" className={isOutOfRange(p.flag) ? 'fill-red-600' : 'fill-forest-700'} />)}
     </svg>
   );
 }
@@ -186,7 +192,7 @@ export function LabTrends({ patientId }) {
           <div key={s.key} className="rounded-lg border border-line p-3">
             <div className="flex items-baseline justify-between gap-2">
               <p className="truncate text-sm font-semibold" title={s.name}>{s.name}</p>
-              <p className={cx('shrink-0 text-sm font-bold', ['high', 'low', 'abnormal'].includes(last.flag) ? 'text-red-700' : 'text-forest-800')}>{last.value}{s.unit ? ` ${s.unit}` : ''}</p>
+              <p className={cx('shrink-0 text-sm font-bold', isOutOfRange(last.flag) ? 'text-red-700' : 'text-forest-800')}>{last.value}{s.unit ? ` ${s.unit}` : ''}</p>
             </div>
             <TrendChart s={s} />
             <p className="text-[11px] text-muted">{s.points.length} result(s) · last {new Intl.DateTimeFormat('en-IN', { dateStyle: 'medium', timeZone: me.tenant.timezone }).format(new Date(last.at))}

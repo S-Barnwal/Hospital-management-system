@@ -1,6 +1,6 @@
 import { Fragment, useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams, useSearchParams } from 'react-router-dom';
-import { LuPlus, LuFlaskConical, LuArrowLeft, LuPrinter, LuBadgeCheck, LuSave, LuIndianRupee, LuTestTubes, LuMessageCircle, LuMail, LuBarcode } from 'react-icons/lu';
+import { LuPlus, LuFlaskConical, LuArrowLeft, LuPrinter, LuBadgeCheck, LuSave, LuIndianRupee, LuTestTubes, LuMessageCircle, LuMail, LuBarcode, LuTriangleAlert } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -12,12 +12,12 @@ import { PaymentModal } from './Billing.jsx';
 import { formatPhone } from '../../lib/contact.js';
 import PhoneInput from '../../components/PhoneInput.jsx';
 import { formatResult, groupByDepartment, methodLine, refRange } from '../../lib/labReport.js';
+import { LabFlag, isCriticalFlag, isOutOfRange } from '../../components/LabFlag.jsx';
 
 export const LAB_STATUSES = ['ordered', 'sample_collected', 'completed', 'verified', 'cancelled'];
 export const PAYMENT_STATUSES = ['unpaid', 'partial', 'paid', 'on_bill', 'unbilled', 'cancelled'];
 const PAY_LABEL = { unpaid: 'Unpaid', partial: 'Partial', paid: 'Paid', on_bill: 'On patient bill', unbilled: 'Not billed', cancelled: 'Bill cancelled' };
 export const PayBadge = ({ status }) => <StatusBadge status={status === 'on_bill' ? 'on_bill' : status} />;
-const FLAG_TONE = { normal: 'green', low: 'blue', high: 'red', abnormal: 'red' };
 
 /** Result box: a dropdown for option results, otherwise a text box (numeric results may be written as "<0.5"). */
 function ResultInput({ row, value, onChange, label }) {
@@ -39,7 +39,26 @@ function TestMeta({ i }) {
   return line ? <span className="block text-xs font-normal text-muted">{line}</span> : null;
 }
 
-const ShownResult = ({ r }) => <span className={cx('font-semibold', ['high', 'low', 'abnormal'].includes(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</span>;
+const ShownResult = ({ r }) => <span className={cx('font-semibold', isOutOfRange(r.flag) && 'text-red-700')}>{formatResult(r.resultValue, r.decimals) ?? '—'}</span>;
+
+/** Reference range, plus the age/gender band it was chosen from. */
+const RangeCell = ({ r }) => <td className="text-xs">{refRange(r)}{r.rangeLabel && <span className="block text-[11px] text-muted">{r.rangeLabel}</span>}</td>;
+
+/** Open critical results of the hospital, shown on top of the orders list. */
+function CriticalPanel() {
+  const { data } = useApi(() => api.get('/lab/critical'), []);
+  if (!data?.length) return null;
+  return (
+    <Alert tone="error" className="mb-4">
+      <p className="mb-2 flex items-center gap-2 font-semibold"><LuTriangleAlert aria-hidden /> {data.length} critical result{data.length > 1 ? 's' : ''} waiting for acknowledgement</p>
+      <ul className="space-y-1 text-sm">
+        {data.slice(0, 8).map((c, i) => (
+          <li key={i}><Link className="font-semibold underline" to={`/app/laboratory/${c.orderId}`}>{c.orderNumber}</Link> · {fullName(c.firstName, c.lastName)} · {c.name}: <strong>{c.value} {c.unit || ''}</strong></li>
+        ))}
+      </ul>
+    </Alert>
+  );
+}
 const METHODS = ['cash', 'upi', 'card', 'bank', 'other'];
 const toPaise = (v) => Math.round(Number(v || 0) * 100);
 
@@ -216,6 +235,7 @@ export default function Lab() {
     <>
       <PageHeader title="Lab orders" subtitle="Every test order with its amount, payment and progress."
         actions={can('lab.write') && <Button onClick={() => setParams({ new: '1' })}><LuPlus aria-hidden /> New order</Button>} />
+      <CriticalPanel />
       <Card>
         <div className="grid gap-3 border-b border-line p-4 sm:grid-cols-4">
           <Input label="Search" className="sm:col-span-2" placeholder="Order no., patient name, number or mobile" value={filters.q} onChange={set('q')} />
@@ -252,6 +272,8 @@ export function LabOrderDetail() {
   const [payOpen, setPayOpen] = useState(false);
   const [shareNote, setShareNote] = useState(null);
   const [reason, setReason] = useState('');
+  const [ackOpen, setAckOpen] = useState(false);
+  const [ackNote, setAckNote] = useState('');
   useEffect(() => {
     if (!o) return;
     // Single-value tests are keyed by item id, panel parameters by `p<id>`.
@@ -280,7 +302,9 @@ export function LabOrderDetail() {
             results: o.items.filter((i) => !i.parameters?.length).map((i) => ({ itemId: i.id, value: String(values[i.id] ?? '') })),
             parameters: o.items.flatMap((i) => (i.parameters || []).filter((x) => !x.isHeading).map((x) => ({ id: x.id, value: String(values[`p${x.id}`] ?? '') }))),
           }), 'Results saved.')}><LuSave aria-hidden /> Save results</Button>}
-          {o.status === 'completed' && can('lab.verify') && <Button loading={busy === 'verify'} onClick={() => run('verify', () => api.post(`/lab/orders/${id}/verify`), 'Verified. Results are now locked.')}><LuBadgeCheck aria-hidden /> Verify</Button>}
+          {o.critical?.open > 0 && can('lab.write') && <Button variant="danger" onClick={() => setAckOpen(true)}><LuTriangleAlert aria-hidden /> Acknowledge critical</Button>}
+          {o.status === 'completed' && can('lab.verify') && <Button loading={busy === 'verify'} disabled={o.critical?.open > 0} title={o.critical?.open > 0 ? 'Acknowledge the critical result first' : undefined}
+            onClick={() => run('verify', () => api.post(`/lab/orders/${id}/verify`), 'Verified. Results are now locked.')}><LuBadgeCheck aria-hidden /> Verify</Button>}
           {canPay && <Button variant="outline" onClick={() => setPayOpen(true)}><LuIndianRupee aria-hidden /> Collect payment</Button>}
           {['ordered', 'sample_collected'].includes(o.status) && can('lab.write') && <Button variant="ghost" onClick={() => setCancelOpen(true)}>Cancel order</Button>}
           {o.samples.length > 0 && o.status !== 'cancelled' && <Button variant="outline" to={`/app/laboratory/${id}/labels`}><LuBarcode aria-hidden /> Sample labels</Button>}
@@ -314,6 +338,8 @@ export function LabOrderDetail() {
           subtitle={`${p.patientNumber} · ${[p.gender && titleCase(p.gender), p.dateOfBirth && `${age(p.dateOfBirth)} yrs`, p.phone].filter(Boolean).join(' · ')}`} />
         <div className="mb-4 flex flex-wrap items-center gap-2"><StatusBadge status={o.status} />{o.priority === 'urgent' && <Badge tone="red">Urgent</Badge>}
           {o.verifiedAt && <span className="text-xs text-muted">Verified by {o.verifiedBy} · {dateTime(o.verifiedAt, tz)}</span>}</div>
+        {o.critical?.open > 0 && <Alert tone="error" className="mb-4"><strong>Critical result.</strong> Inform the treating doctor now, then press “Acknowledge critical” and write who was told. The order cannot be verified until then.</Alert>}
+        {o.critical?.open === 0 && o.critical?.acknowledgedNote && <Alert tone="info" className="mb-4">Critical result acknowledged: {o.critical.acknowledgedNote}</Alert>}
         {o.status === 'ordered' && <Alert tone="info" className="mb-4">Collect the samples (below or under Samples) before entering results.</Alert>}
         {o.status === 'completed' && <Alert tone="warning" className="mb-4">Results entered — awaiting verification. Unverified results should not be released to the patient.</Alert>}
         {['sample_collected', 'completed'].includes(o.status) && can('lab.write') && <p className="mb-4 text-xs text-muted">“Send by e-mail / WhatsApp” becomes available after the results are <strong>verified</strong>.</p>}
@@ -376,30 +402,30 @@ export function LabOrderDetail() {
                   <Fragment key={i.id}>
                     {i.parameters?.length ? (
                       <>
-                        <tr><td colSpan={4} className="font-semibold">{i.testName}<TestMeta i={i} /></td><td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : ''}</td></tr>
+                        <tr><td colSpan={4} className="font-semibold">{i.testName}<TestMeta i={i} /></td><td><LabFlag flag={i.flag} empty="" /></td></tr>
                         {i.parameters.map((x) => (x.isHeading ? (
                           <tr key={`p${x.id}`}><td colSpan={5} className="pl-6 text-xs font-bold uppercase tracking-wide text-muted">{x.name}</td></tr>
                         ) : (
-                          <tr key={`p${x.id}`}>
+                          <tr key={`p${x.id}`} className={cx(isCriticalFlag(x.flag) && 'bg-red-50')}>
                             <td className="pl-8 text-sm">{x.name}</td>
                             <td className="min-w-36">{canEnter
                               ? <ResultInput row={x} value={values[`p${x.id}`]} onChange={(v) => setValues((st) => ({ ...st, [`p${x.id}`]: v }))} label={`${i.testName}: ${x.name}`} />
                               : <ShownResult r={x} />}</td>
                             <td>{x.unit ?? ''}</td>
-                            <td className="text-xs">{refRange(x)}</td>
-                            <td>{x.flag ? <Badge tone={FLAG_TONE[x.flag]}>{x.flag}</Badge> : '—'}</td>
+                            <RangeCell r={x} />
+                            <td><LabFlag flag={x.flag} /></td>
                           </tr>
                         )))}
                       </>
                     ) : (
-                      <tr>
+                      <tr className={cx(isCriticalFlag(i.flag) && 'bg-red-50')}>
                         <td className="font-medium">{i.testName}<TestMeta i={i} /></td>
                         <td className="min-w-36">{canEnter
                           ? <ResultInput row={i} value={values[i.id]} onChange={(v) => setValues((s) => ({ ...s, [i.id]: v }))} label={`Result for ${i.testName}`} />
                           : <ShownResult r={i} />}</td>
                         <td>{i.unit ?? ''}</td>
-                        <td className="text-xs">{refRange(i)}</td>
-                        <td>{i.flag ? <Badge tone={FLAG_TONE[i.flag]}>{i.flag}</Badge> : '—'}</td>
+                        <RangeCell r={i} />
+                        <td><LabFlag flag={i.flag} /></td>
                       </tr>
                     )}
                     {i.interpretation && <tr><td colSpan={5} className="whitespace-pre-line pl-8 text-xs text-muted"><span className="font-semibold text-ink">Interpretation: </span>{i.interpretation}</td></tr>}
@@ -415,6 +441,12 @@ export function LabOrderDetail() {
         : <p className="mt-6 hidden text-sm font-semibold print:block">PROVISIONAL — NOT VERIFIED</p>}
       <p className="mt-6 hidden text-center text-xs print:block">— End of report —</p>
 
+      <Modal open={ackOpen} onClose={() => setAckOpen(false)} title="Acknowledge critical result" size="sm"
+        footer={<><Button variant="ghost" onClick={() => setAckOpen(false)}>Cancel</Button><Button variant="danger" disabled={ackNote.trim().length < 3}
+          onClick={() => { setAckOpen(false); run('ack', () => api.post(`/lab/orders/${id}/critical-ack`, { note: ackNote.trim() }), 'Critical result acknowledged.'); setAckNote(''); }}>Acknowledge</Button></>}>
+        <p className="mb-3 text-sm text-muted">Confirm that the treating doctor (or ward) has been told about the critical value. Your name and the time are recorded.</p>
+        <Textarea label="Who was informed, and how" value={ackNote} onChange={(e) => setAckNote(e.target.value)} placeholder="e.g. Dr Mehta informed by phone at 4:10 pm" />
+      </Modal>
       <Modal open={cancelOpen} onClose={() => setCancelOpen(false)} title="Cancel lab order" size="sm"
         footer={<><Button variant="ghost" onClick={() => setCancelOpen(false)}>Keep</Button><Button variant="danger" disabled={!reason.trim()} onClick={() => { setCancelOpen(false); run('cancel', () => api.post(`/lab/orders/${id}/status`, { status: 'cancelled', reason: reason.trim() }), 'Order cancelled.'); }}>Cancel order</Button></>}>
         <Textarea label="Reason" value={reason} onChange={(e) => setReason(e.target.value)} />

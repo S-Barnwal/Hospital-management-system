@@ -24,9 +24,13 @@ export const testSchema = z.object({
   price, isActive: z.boolean().optional(), priceReason: z.string().trim().max(200).optional(),
   method: optText(150), instrument: optText(150), interpretation: optText(2000),
   inputType: z.enum(['numeric', 'text', 'option']).default('numeric'), options: optionList,
+  criticalLow: nullableNum, criticalHigh: nullableNum,
   decimals: smallInt(6), tatHours: z.union([z.literal('').transform(() => null), z.null(), z.coerce.number().int().min(1).max(2160)]).optional(), sortOrder: smallInt(9999),
 }).strict()
   .refine((v) => v.refLow == null || v.refHigh == null || v.refHigh >= v.refLow, { message: 'High limit must be ≥ low limit', path: ['refHigh'] })
+  .refine((v) => v.criticalLow == null || v.criticalHigh == null || v.criticalHigh > v.criticalLow, { message: 'Critical high must be above critical low', path: ['criticalHigh'] })
+  .refine((v) => v.criticalLow == null || v.refLow == null || v.criticalLow <= v.refLow, { message: 'Critical low must be at or below the normal low', path: ['criticalLow'] })
+  .refine((v) => v.criticalHigh == null || v.refHigh == null || v.criticalHigh >= v.refHigh, { message: 'Critical high must be at or above the normal high', path: ['criticalHigh'] })
   .transform((v, ctx) => {
     try {
       const options = packOptions(v.options ?? []);
@@ -56,14 +60,15 @@ const testParams = (b) => ({
   price: t.money(Number(b.price).toFixed(2)), active: b.isActive ?? true,
   method: b.method || null, instr: b.instrument || null, interp: b.interpretation || null, itype: b.inputType, opts: b.options ?? null,
   decimals: b.decimals ?? null, tat: b.tatHours ?? null, sort: b.sortOrder ?? null,
+  cl: b.criticalLow == null ? null : t.dec(b.criticalLow, 12, 4), ch: b.criticalHigh == null ? null : t.dec(b.criticalHigh, 12, 4),
 });
 
 export async function insertLabTest(tx, ctx, body) {
   const d = await resolveDepartment(tx, ctx.tenantId, body);
   const r = await tx.one(`INSERT INTO hms.LabTests (TenantId, Code, Name, Department, DepartmentId, Description, SampleType, Unit, RefLow, RefHigh, RefText, Price, IsActive,
-                            Method, Instrument, Interpretation, InputType, Options, Decimals, TatHours, SortOrder)
+                            Method, Instrument, Interpretation, InputType, Options, Decimals, TatHours, SortOrder, CriticalLow, CriticalHigh)
                           OUTPUT INSERTED.LabTestId VALUES (@tid, @code, @name, @dept, @deptId, @descr, @st, @unit, @lo, @hi, @txt, @price, @active,
-                            @method, @instr, @interp, @itype, @opts, @decimals, @tat, @sort)`,
+                            @method, @instr, @interp, @itype, @opts, @decimals, @tat, @sort, @cl, @ch)`,
   { tid: ctx.tenantId, ...testParams(body), ...d });
   await recordPrice(tx, ctx, 'test', r.LabTestId, body.price, 'Initial price');
   return r.LabTestId;
@@ -75,7 +80,8 @@ export async function updateLabTest(tx, ctx, id, body) {
   const d = await resolveDepartment(tx, ctx.tenantId, body);
   await tx.exec(`UPDATE hms.LabTests SET Code = @code, Name = @name, Department = @dept, DepartmentId = @deptId, Description = @descr, SampleType = @st, Unit = @unit,
                    RefLow = @lo, RefHigh = @hi, RefText = @txt, Price = @price, IsActive = @active, Method = @method, Instrument = @instr,
-                   Interpretation = @interp, InputType = @itype, Options = @opts, Decimals = @decimals, TatHours = @tat, SortOrder = @sort
+                   Interpretation = @interp, InputType = @itype, Options = @opts, Decimals = @decimals, TatHours = @tat, SortOrder = @sort,
+                   CriticalLow = @cl, CriticalHigh = @ch
                  WHERE TenantId = @tid AND LabTestId = @id`,
   { tid: ctx.tenantId, id, ...testParams(body), ...d });
   if (Number(old.Price).toFixed(2) !== Number(body.price).toFixed(2)) {

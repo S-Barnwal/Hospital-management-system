@@ -55,6 +55,7 @@ export const APPLIED_PROBES = {
   '013_phase3_lab_pharmacy_hr.sql': "SELECT CASE WHEN OBJECT_ID('hms.Attachments', 'U') IS NOT NULL THEN 1 ELSE 0 END AS ok",
   '014_phase4_frontdesk_platform.sql': "SELECT CASE WHEN COL_LENGTH('hms.Tenants', 'GroupId') IS NOT NULL THEN 1 ELSE 0 END AS ok",
   '015_lab_master_data.sql': "SELECT CASE WHEN COL_LENGTH('hms.LabResultValues', 'IsHeading') IS NOT NULL THEN 1 ELSE 0 END AS ok",
+  '016_lab_ranges_critical.sql': "SELECT CASE WHEN EXISTS (SELECT 1 FROM sys.indexes WHERE name = 'IX_LabResultValues_OpenCritical') THEN 1 ELSE 0 END AS ok",
 };
 
 /**

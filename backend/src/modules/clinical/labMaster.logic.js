@@ -88,7 +88,8 @@ export function checkImportRows(input) {
       if (!NUMERIC_RE.test(v)) { problems.push(`${k} must be a number`); return null; }
       return Number(v);
     };
-    const refLow = num('reflow'); const refHigh = num('refhigh'); const price = num('price'); const tatHours = num('tathours'); const decimals = num('decimals');
+    const refLow = num('reflow'); const refHigh = num('refhigh'); const criticalLow = num('criticallow'); const criticalHigh = num('criticalhigh');
+    if (criticalLow != null && criticalHigh != null && criticalHigh <= criticalLow) problems.push('criticalHigh must be above criticalLow'); const price = num('price'); const tatHours = num('tathours'); const decimals = num('decimals');
     if (refLow != null && refHigh != null && refHigh < refLow) problems.push('refHigh must be ≥ refLow');
     if (price != null && (price < 0 || price > 1e7)) problems.push('price must be 0–10,000,000');
     if (decimals != null && (decimals < 0 || decimals > 6 || !Number.isInteger(decimals))) problems.push('decimals must be 0–6');
@@ -102,7 +103,7 @@ export function checkImportRows(input) {
     const row = {
       code, name, department: text('department', 60), sampleType: text('sampletype', 40), unit: text('unit', 30), refLow, refHigh,
       refText: text('reftext', 100), price: price ?? 0, method: text('method', 150), instrument: text('instrument', 150),
-      interpretation: text('interpretation', 2000), inputType, options, decimals, tatHours,
+      interpretation: text('interpretation', 2000), inputType, options, decimals, tatHours, criticalLow, criticalHigh,
     };
     codes.add(code);
     if (problems.length) errors.push({ line, code: code || null, message: problems.join('; ') });

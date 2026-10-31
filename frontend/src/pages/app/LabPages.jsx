@@ -1,7 +1,7 @@
 // Laboratory master data and work queues: Tests, Packages (+ price history), Samples, Results, Referral doctors.
 import { useEffect, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
-import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound, LuListTree, LuUpload, LuDownload, LuLayers } from 'react-icons/lu';
+import { LuPlus, LuFlaskConical, LuPencil, LuTrash2, LuSearch, LuIndianRupee, LuArrowLeft, LuPackage, LuTestTubes, LuClipboardCheck, LuUserRound, LuListTree, LuUpload, LuDownload, LuLayers, LuSlidersHorizontal } from 'react-icons/lu';
 import { api, qs } from '../../lib/api.js';
 import { useApi, useDebounced, useForm } from '../../lib/hooks.js';
 import { useTenantAuth } from '../../context/AuthContext.jsx';
@@ -51,7 +51,8 @@ export function LabTests() {
   const [editing, setEditing] = useState(null);
   const [paramsFor, setParamsFor] = useState(null);
   const [deptsOpen, setDeptsOpen] = useState(false);
-  const [importOpen, setImportOpen] = useState(false);
+  const [importOpen, setImportOpen] = useState(null);
+  const [rangesFor, setRangesFor] = useState(null);
   const f = useForm({});
   useEffect(() => {
     if (editing) f.setValues(editing === 'new' ? { ...BLANK_TEST }
@@ -65,7 +66,8 @@ export function LabTests() {
     const body = { code: v.code, name: v.name, departmentId: v.departmentId ? Number(v.departmentId) : null, description: v.description || null, sampleType: v.sampleType || null, unit: v.unit || null,
       refLow: v.refLow, refHigh: v.refHigh, refText: v.refText || null, price: v.price, isActive: Boolean(v.isActive), ...(priceChanged && v.priceReason ? { priceReason: v.priceReason } : {}),
       method: v.method || null, instrument: v.instrument || null, interpretation: v.interpretation || null, inputType: v.inputType || 'numeric',
-      options: v.inputType === 'option' ? splitOptions(v.options) : [], decimals: v.decimals, tatHours: v.tatHours, sortOrder: v.sortOrder };
+      options: v.inputType === 'option' ? splitOptions(v.options) : [], decimals: v.decimals, tatHours: v.tatHours, sortOrder: v.sortOrder,
+      criticalLow: v.inputType === 'numeric' ? v.criticalLow : null, criticalHigh: v.inputType === 'numeric' ? v.criticalHigh : null };
     if (editing === 'new') await api.post('/lab/tests', body); else await api.put(`/lab/tests/${editing.id}`, body);
     notify.success(editing === 'new' ? 'Test added.' : 'Test updated.');
     setEditing(null); reload();
@@ -75,7 +77,8 @@ export function LabTests() {
       <PageHeader title="Tests" subtitle="Your lab’s test menu with reference ranges and prices."
         actions={can('lab.configure') && <div className="flex flex-wrap gap-2">
           <Button variant="outline" onClick={() => setDeptsOpen(true)}><LuLayers aria-hidden /> Departments</Button>
-          <Button variant="outline" onClick={() => setImportOpen(true)}><LuUpload aria-hidden /> Import CSV</Button>
+          <Button variant="outline" onClick={() => setImportOpen('tests')}><LuUpload aria-hidden /> Import CSV</Button>
+          <Button variant="outline" onClick={() => setImportOpen('ranges')}><LuUpload aria-hidden /> Import ranges</Button>
           <Button onClick={() => setEditing('new')}><LuPlus aria-hidden /> New test</Button>
         </div>} />
       <Card>
@@ -89,13 +92,15 @@ export function LabTests() {
             { key: 'department', label: 'Department', render: (t) => t.department || '—' },
             { key: 'sampleType', label: 'Sample', render: (t) => t.sampleType || '—' },
             { key: 'range', label: 'Reference range', render: (t) => (t.inputType === 'option' ? <span className="text-xs">{t.options.join(' / ')}</span>
-              : t.refLow != null || t.refHigh != null ? `${t.refLow ?? ''} – ${t.refHigh ?? ''} ${t.unit ?? ''}` : t.refText || '—') },
+              : <>{t.refLow != null || t.refHigh != null ? `${t.refLow ?? ''} – ${t.refHigh ?? ''} ${t.unit ?? ''}` : t.refText || '—'}
+                {t.rangeCount > 0 && <span className="block text-xs text-forest-700">+ {t.rangeCount} age/gender range{t.rangeCount > 1 ? 's' : ''}</span>}</>) },
             { key: 'tatHours', label: 'TAT', render: (t) => (t.tatHours ? `${t.tatHours} h` : '—') },
             { key: 'price', label: 'Price', className: 'text-right', render: (t) => money(t.price) },
             { key: 'isActive', label: 'Status', render: (t) => <ActiveBadge on={t.isActive} /> },
             { key: 'act', label: 'Actions', className: 'text-right', render: (t) => (
               <div className="flex justify-end gap-1">
                 <Button size="sm" variant="ghost" onClick={() => navigate(`/app/lab-prices/test/${t.id}`)} aria-label="Price history" title="Price history"><LuIndianRupee aria-hidden /></Button>
+                <Button size="sm" variant="ghost" onClick={() => setRangesFor(t)} aria-label="Ranges" title="Age / gender ranges & critical values"><LuSlidersHorizontal aria-hidden />{t.rangeCount > 0 && <span className="text-xs">{t.rangeCount}</span>}</Button>
                 <Button size="sm" variant="ghost" onClick={() => setParamsFor(t)} aria-label="Parameters" title="Parameters (panel)"><LuListTree aria-hidden />{t.parameterCount > 0 && <span className="text-xs">{t.parameterCount}</span>}</Button>
                 {can('lab.configure') && <Button size="sm" variant="ghost" onClick={() => setEditing(t)} aria-label="Edit" title="Edit"><LuPencil aria-hidden /></Button>}
                 {can('lab.configure') && <Button size="sm" variant="ghost" aria-label="Delete" title="Delete" onClick={async () => { if (confirmDelete(`Delete test “${t.name}”? Only possible if it was never ordered and is in no package.`) && (await withToast(() => api.del(`/lab/tests/${t.id}`), 'Test deleted.'))) reload(); }}><LuTrash2 aria-hidden /></Button>}
@@ -104,7 +109,8 @@ export function LabTests() {
       </Card>
       {paramsFor && <ParametersModal test={paramsFor} onClose={(changed) => { setParamsFor(null); if (changed) reload(); }} />}
       {deptsOpen && <DepartmentsModal onClose={() => { setDeptsOpen(false); reloadDepts(); reload(); }} />}
-      {importOpen && <ImportTestsModal onClose={(changed) => { setImportOpen(false); if (changed) { reload(); reloadDepts(); } }} />}
+      {importOpen && <ImportModal kind={importOpen} onClose={(changed) => { setImportOpen(null); if (changed) { reload(); reloadDepts(); } }} />}
+      {rangesFor && <RangesModal test={rangesFor} onClose={(changed) => { setRangesFor(null); if (changed) reload(); }} />}
       <Modal open={Boolean(editing)} onClose={() => setEditing(null)} title={editing === 'new' ? 'New test' : `Edit test — ${editing?.code ?? ''}`} size="lg"
         footer={<><Button variant="ghost" onClick={() => setEditing(null)}>Cancel</Button><Button onClick={save} loading={f.submitting}>Save</Button></>}>
         <form onSubmit={save} className="grid gap-3 sm:grid-cols-2" noValidate>
@@ -121,7 +127,11 @@ export function LabTests() {
           {f.values.inputType === 'option' && <Textarea label="Dropdown choices (one per line)" required {...f.bind('options')} error={f.errors.options} className="sm:col-span-2" placeholder={'Positive\nNegative'} />}
           <Input label="Ref. low" type="number" step="any" {...f.bind('refLow')} error={f.errors.refLow} />
           <Input label="Ref. high" type="number" step="any" {...f.bind('refHigh')} error={f.errors.refHigh} />
-          <Input label="Reference text (non-numeric results)" {...f.bind('refText')} className="sm:col-span-2" />
+          {(f.values.inputType || 'numeric') === 'numeric' && <>
+            <Input label="Critical low" type="number" step="any" {...f.bind('criticalLow')} error={f.errors.criticalLow} hint="Below this: critical alert" />
+            <Input label="Critical high" type="number" step="any" {...f.bind('criticalHigh')} error={f.errors.criticalHigh} hint="Above this: critical alert" />
+          </>}
+          <Input label="Reference text (non-numeric results)" {...f.bind('refText')} className="sm:col-span-2" hint="Default range. Age / gender ranges: “Ranges” button in the list" />
           <Input label="Method" {...f.bind('method')} error={f.errors.method} placeholder="e.g. Photometry" />
           <Input label="Instrument" {...f.bind('instrument')} error={f.errors.instrument} />
           <Input label="Turnaround time (hours)" type="number" min="1" max="2160" {...f.bind('tatHours')} error={f.errors.tatHours} />
@@ -138,7 +148,7 @@ export function LabTests() {
 }
 
 const BLANK_TEST = { code: '', name: '', departmentId: '', description: '', sampleType: 'Blood', unit: '', refLow: '', refHigh: '', refText: '', price: '0', isActive: true,
-  method: '', instrument: '', interpretation: '', inputType: 'numeric', options: '', decimals: '', tatHours: '', sortOrder: '' };
+  method: '', instrument: '', interpretation: '', inputType: 'numeric', options: '', decimals: '', tatHours: '', sortOrder: '', criticalLow: '', criticalHigh: '' };
 const INPUT_TYPE_OPTIONS = [{ value: 'numeric', label: 'Number' }, { value: 'text', label: 'Free text' }, { value: 'option', label: 'Dropdown (choices)' }];
 const splitOptions = (text) => String(text || '').split(/\r?\n|\|/).map((x) => x.trim()).filter(Boolean);
 
@@ -195,55 +205,71 @@ function DepartmentsModal({ onClose }) {
   );
 }
 
-const IMPORT_COLUMNS = ['code', 'name', 'department', 'sampleType', 'unit', 'refLow', 'refHigh', 'refText', 'price', 'inputType', 'options', 'decimals', 'method', 'instrument', 'tatHours', 'interpretation'];
-const MAX_IMPORT_ROWS = 500;
+const IMPORT_KINDS = {
+  tests: {
+    title: 'Import tests from CSV', endpoint: '/lab/tests/import', maxRows: 500, file: 'lab-tests-template.csv',
+    columns: ['code', 'name', 'department', 'sampleType', 'unit', 'refLow', 'refHigh', 'refText', 'criticalLow', 'criticalHigh', 'price', 'inputType', 'options', 'decimals', 'method', 'instrument', 'tatHours', 'interpretation'],
+    examples: [['GLU-F', 'Glucose fasting (example)', 'Biochemistry', 'Serum', 'mg/dL', '', '', '', '', '', '0', 'numeric', '', '0', '', '', '', ''],
+      ['HBSAG-EX', 'HBsAg (example)', 'Serology & Immunology', 'Serum', '', '', '', '', '', '', '0', 'option', 'Reactive|Non-reactive', '', '', '', '', '']],
+    help: 'One test per line. Ranges, units and interpretations are imported exactly as written — your lab must check them before use. Missing departments are created. Panel parameters are added afterwards from the test list.',
+    ready: (c) => `Ready: ${c.create} new, ${c.update} to update, ${c.skip} skipped.${c.newDepartments?.length ? ` New departments: ${c.newDepartments.join(', ')}.` : ''}`,
+    done: (c) => `Imported: ${c.create} new, ${c.update} updated, ${c.skip} skipped.`,
+    canImport: (c) => c.create + c.update > 0,
+  },
+  ranges: {
+    title: 'Import age / gender ranges from CSV', endpoint: '/lab/ranges/import', maxRows: 2000, file: 'lab-ranges-template.csv',
+    columns: ['testCode', 'parameter', 'gender', 'ageFrom', 'ageFromUnit', 'ageTo', 'ageToUnit', 'low', 'high', 'text', 'criticalLow', 'criticalHigh'],
+    examples: [['CBC', 'Haemoglobin', 'male', '18', 'y', '', 'y', '', '', '', '', ''], ['CBC', 'Haemoglobin', 'female', '18', 'y', '', 'y', '', '', '', '', '']],
+    help: 'One range per line: test code, parameter name (blank for a single-result test), gender any / male / female, age band from–to (to is not included; blank = no limit) in d / m / y. The file REPLACES all ranges of every test it names. Values are your lab’s own — the template rows are only examples to fill in.',
+    ready: (c) => `Ready: ${c.ranges} ranges for ${c.tests} test(s). Existing ranges of these tests will be replaced.`,
+    done: (c) => `Imported ${c.ranges} ranges for ${c.tests} test(s).`,
+    canImport: (c) => c.ranges > 0,
+  },
+};
 
-/** CSV import of the test catalogue: check first (nothing saved), then import. Codes already in the catalogue are skipped or updated. */
-function ImportTestsModal({ onClose }) {
+/** CSV import (tests or ranges): check first (nothing saved), then import. All-or-nothing on the server. */
+function ImportModal({ kind, onClose }) {
+  const K = IMPORT_KINDS[kind];
   const [rows, setRows] = useState(null);
   const [fileName, setFileName] = useState('');
   const [mode, setMode] = useState('skip');
   const [check, setCheck] = useState(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState(null);
-  const template = () => downloadText('lab-tests-template.csv', `${toCsv([IMPORT_COLUMNS,
-    ['GLU-F', 'Glucose fasting (example)', 'Biochemistry', 'Serum', 'mg/dL', '', '', '', '0', 'numeric', '', '0', '', '', '', ''],
-    ['HBSAG-EX', 'HBsAg (example)', 'Serology & Immunology', 'Serum', '', '', '', '', '0', 'option', 'Reactive|Non-reactive', '', '', '', '', '']])}\r\n`);
+  const template = () => downloadText(K.file, `${toCsv([K.columns, ...K.examples])}\r\n`);
   const readFile = async (file) => {
     setErr(null); setCheck(null); setRows(null); setFileName(file?.name || '');
     if (!file) return;
     if (file.size > 2 * 1024 * 1024) { setErr('The file is larger than 2 MB.'); return; }
     const list = csvToObjects(await file.text());
     if (!list.length) { setErr('No rows found. The first line must be the column names (download the template).'); return; }
-    if (list.length > MAX_IMPORT_ROWS) { setErr(`The file has ${list.length} rows; import at most ${MAX_IMPORT_ROWS} at a time.`); return; }
+    if (list.length > K.maxRows) { setErr(`The file has ${list.length} rows; import at most ${K.maxRows} at a time.`); return; }
     setRows(list);
   };
   const run = async (dryRun) => {
     setBusy(true); setErr(null);
     try {
-      const r = await api.post('/lab/tests/import', { rows, mode, dryRun });
+      const r = await api.post(K.endpoint, { rows, dryRun, ...(kind === 'tests' ? { mode } : {}) });
       if (dryRun) setCheck(r.data);
-      else { notify.success(`Imported: ${r.data.create} new, ${r.data.update} updated, ${r.data.skip} skipped.`); onClose(true); }
+      else { notify.success(K.done(r.data)); onClose(true); }
     } catch (e) { setErr(e.message); if (e.details) setCheck((c) => ({ ...(c || {}), errors: e.details.map((d) => ({ line: d.path, message: d.message })) })); }
     finally { setBusy(false); }
   };
-  const canImport = check && !check.errors?.length && (check.create + check.update) > 0;
+  const canImport = check && !check.errors?.length && K.canImport(check);
   return (
-    <Modal open onClose={() => onClose(false)} size="lg" title="Import tests from CSV"
+    <Modal open onClose={() => onClose(false)} size="lg" title={K.title}
       footer={<><Button variant="ghost" onClick={() => onClose(false)}>Cancel</Button>
         <Button variant="outline" disabled={!rows} loading={busy && !check} onClick={() => run(true)}>Check file</Button>
         <Button disabled={!canImport} loading={busy && Boolean(check)} onClick={() => run(false)}>Import</Button></>}>
       <div className="space-y-3 text-sm">
-        <p className="text-muted">Upload a CSV with one test per line. Reference ranges, units and interpretations are imported exactly as written — your lab must check them before use.
-          Missing departments are created. Panel parameters are added afterwards from the test list.</p>
+        <p className="text-muted">{K.help}</p>
         <Button size="sm" variant="ghost" onClick={template}><LuDownload aria-hidden /> Download template</Button>
-        <Input label="CSV file" type="file" accept=".csv,text/csv" onChange={(e) => readFile(e.target.files?.[0])} hint={fileName && rows ? `${fileName}: ${rows.length} rows` : `Up to ${MAX_IMPORT_ROWS} rows, 2 MB`} />
-        <Select label="Codes that already exist" value={mode} onChange={(e) => { setMode(e.target.value); setCheck(null); }}
-          options={[{ value: 'skip', label: 'Skip them (keep my current tests)' }, { value: 'update', label: 'Update them from the file' }]} />
+        <Input label="CSV file" type="file" accept=".csv,text/csv" onChange={(e) => readFile(e.target.files?.[0])} hint={fileName && rows ? `${fileName}: ${rows.length} rows` : `Up to ${K.maxRows} rows, 2 MB`} />
+        {kind === 'tests' && <Select label="Codes that already exist" value={mode} onChange={(e) => { setMode(e.target.value); setCheck(null); }}
+          options={[{ value: 'skip', label: 'Skip them (keep my current tests)' }, { value: 'update', label: 'Update them from the file' }]} />}
         {check && (
           <Alert tone={check.errors?.length ? 'error' : 'success'}>
-            {check.errors?.length ? `${check.errors.length} line(s) need fixing — nothing will be saved until the file is correct.`
-              : `Ready: ${check.create} new, ${check.update} to update, ${check.skip} skipped.${check.newDepartments?.length ? ` New departments: ${check.newDepartments.join(', ')}.` : ''}`}
+            {check.errors?.length ? `${check.errors.length} line(s) need fixing — nothing will be saved until the file is correct.` : K.ready(check)}
           </Alert>
         )}
         {check?.errors?.length > 0 && (
@@ -253,6 +279,80 @@ function ImportTestsModal({ onClose }) {
         )}
         {err && !check?.errors?.length && <Alert tone="error">{err}</Alert>}
       </div>
+    </Modal>
+  );
+}
+
+const AGE_UNIT_OPTIONS = [{ value: 'd', label: 'days' }, { value: 'm', label: 'months' }, { value: 'y', label: 'years' }];
+const blankRange = (parameterId = '') => ({ parameterId, gender: 'any', ageFrom: '', ageFromUnit: 'y', ageTo: '', ageToUnit: 'y', refLow: '', refHigh: '', refText: '', criticalLow: '', criticalHigh: '' });
+const cellStr = (v) => (v == null ? '' : String(v));
+
+/**
+ * Age / gender ranges of one test (and of each panel parameter). The patient's age and gender pick the range when an
+ * order is placed; with no match the test's default range is used.
+ */
+function RangesModal({ test, onClose }) {
+  const { can } = useTenantAuth();
+  const { data, loading, error } = useApi(() => api.get(`/lab/tests/${test.id}/ranges`), [test.id]);
+  const [rows, setRows] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    if (data) setRows(data.ranges.map((x) => ({ ...Object.fromEntries(Object.entries(x).map(([k, v]) => [k, cellStr(v)])), ageFrom: x.ageFrom ? String(x.ageFrom) : '' })));
+  }, [data]);
+  const targets = data ? [{ value: '', label: data.parameters.length ? `${test.name} (whole test)` : test.name },
+    ...data.parameters.map((p) => ({ value: String(p.id), label: p.name }))] : [];
+  const set = (i, k, v) => setRows((rs) => rs.map((x, j) => (j === i ? { ...x, [k]: v } : x)));
+  const save = async () => {
+    setBusy(true); setErr(null);
+    try {
+      const r = await api.put(`/lab/tests/${test.id}/ranges`, { ranges: rows.map(({ id: _id, sortOrder: _s, ...x }) => x) });
+      notify.success(`${r.data.count} range(s) saved. New orders use them; old reports keep their ranges.`);
+      onClose(true);
+    } catch (e) { setErr(e.details?.length ? e.details.map((d) => d.message).join(' · ') : e.message); } finally { setBusy(false); }
+  };
+  const defaults = (pid) => {
+    const d = pid ? data.parameters.find((p) => String(p.id) === pid) : data.test;
+    if (!d) return '';
+    const rng = d.refLow != null || d.refHigh != null ? `${d.refLow ?? ''} – ${d.refHigh ?? ''}` : d.refText || 'none';
+    const crit = d.criticalLow != null || d.criticalHigh != null ? ` · critical < ${d.criticalLow ?? '—'} / > ${d.criticalHigh ?? '—'}` : '';
+    return `Default: ${rng}${crit}`;
+  };
+  return (
+    <Modal open onClose={() => onClose(false)} size="lg" title={`Ranges — ${test.name}`}
+      footer={<><Button variant="ghost" onClick={() => onClose(false)}>Cancel</Button>{can('lab.configure') && <Button onClick={save} loading={busy} disabled={!rows}>Save ranges</Button>}</>}>
+      <p className="mb-3 text-sm text-muted">Add a row per gender and age band. The age band includes “from” and stops before “to” (blank “to” = no upper limit).
+        When an order is placed, the narrowest band for the patient’s gender wins; with no match the default range below is used. Critical values raise an alert that must be acknowledged before verifying.</p>
+      {error && <Alert tone="error">{error.message}</Alert>}
+      {loading || !rows ? <Skeleton className="h-32 w-full" /> : (
+        <div className="space-y-2">
+          {rows.map((x, i) => (
+            <div key={i} className="space-y-2 rounded-lg border border-line p-2">
+              <div className="flex flex-wrap items-end gap-2">
+                {targets.length > 1 && <Select label="For" className="min-w-40 flex-1" value={x.parameterId} onChange={(e) => set(i, 'parameterId', e.target.value)} options={targets} />}
+                <Select label="Gender" className="w-28" value={x.gender} onChange={(e) => set(i, 'gender', e.target.value)}
+                  options={[{ value: 'any', label: 'Any' }, { value: 'male', label: 'Male' }, { value: 'female', label: 'Female' }]} />
+                <Input label="Age from" type="number" min="0" className="w-20" value={x.ageFrom} onChange={(e) => set(i, 'ageFrom', e.target.value)} placeholder="0" />
+                <Select label="Unit" className="w-24" value={x.ageFromUnit} onChange={(e) => set(i, 'ageFromUnit', e.target.value)} options={AGE_UNIT_OPTIONS} aria-label="Age from unit" />
+                <Input label="Age to" type="number" min="1" className="w-20" value={x.ageTo} onChange={(e) => set(i, 'ageTo', e.target.value)} placeholder="—" />
+                <Select label="Unit" className="w-24" value={x.ageToUnit} onChange={(e) => set(i, 'ageToUnit', e.target.value)} options={AGE_UNIT_OPTIONS} aria-label="Age to unit" />
+              </div>
+              <div className="flex flex-wrap items-end gap-2">
+                <Input label="Low" type="number" step="any" className="w-24" value={x.refLow} onChange={(e) => set(i, 'refLow', e.target.value)} />
+                <Input label="High" type="number" step="any" className="w-24" value={x.refHigh} onChange={(e) => set(i, 'refHigh', e.target.value)} />
+                <Input label="Text" className="w-32" value={x.refText} onChange={(e) => set(i, 'refText', e.target.value)} placeholder="e.g. Negative" />
+                <Input label="Critical low" type="number" step="any" className="w-24" value={x.criticalLow} onChange={(e) => set(i, 'criticalLow', e.target.value)} />
+                <Input label="Critical high" type="number" step="any" className="w-24" value={x.criticalHigh} onChange={(e) => set(i, 'criticalHigh', e.target.value)} />
+                <span className="mb-2 flex-1 text-xs text-muted">{defaults(x.parameterId)}</span>
+                <Button size="sm" variant="ghost" className="mb-1" onClick={() => setRows((rs) => rs.filter((_, j) => j !== i))} aria-label={`Remove range ${i + 1}`}><LuTrash2 aria-hidden /></Button>
+              </div>
+            </div>
+          ))}
+          {rows.length === 0 && <p className="rounded-lg bg-ivory p-3 text-sm text-muted">No age / gender ranges — every patient gets the default range ({defaults('').replace('Default: ', '')}).</p>}
+          {can('lab.configure') && <Button size="sm" variant="outline" onClick={() => setRows((rs) => [...rs, blankRange(rs.at(-1)?.parameterId ?? '')])}><LuPlus aria-hidden /> Add range</Button>}
+        </div>
+      )}
+      {err && <Alert tone="error" className="mt-3">{err}</Alert>}
     </Modal>
   );
 }

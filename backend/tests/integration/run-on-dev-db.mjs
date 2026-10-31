@@ -23,7 +23,11 @@ try {
 } finally {
   await closePool();
 }
-const child = spawn(process.execPath, ['--test', '--test-concurrency=1', 'tests/integration/**/*.test.js'], {
+// Optional: only some files, e.g.  npm run test:e2e -- chunk2-lab-master phase3
+const only = process.argv.slice(2).map((f) => f.replace(/\\/g, '/').replace(/^.*\//, '').replace(/(\.test)?\.js$/, ''));
+if (only.some((f) => !/^[\w.-]+$/.test(f))) { console.error('Give test file names only, e.g.  npm run test:e2e -- phase3'); process.exit(1); }
+const files = only.length ? only.map((f) => `tests/integration/${f}.test.js`) : ['tests/integration/**/*.test.js'];
+const child = spawn(process.execPath, ['--test', '--test-concurrency=1', ...files], {
   stdio: 'inherit', env: { ...process.env, INTEGRATION_DB_OK: name },
 });
 child.on('exit', (code) => process.exit(code ?? 1));

@@ -230,7 +230,7 @@ describe('Phase 2: care & cash isolation', () => {
     assert.equal((await b('POST', `/ipd/admissions/${admId}/notes`, { category: 'note', note: 'hack' })).status, 404);
     assert.equal((await b('POST', `/ipd/admissions/${admId}/charges`, { chargeId: charges[0].id })).status, 404);
     assert.equal((await b('PUT', `/ipd/admissions/${admId}/discharge-summary`, { finalDiagnosis: 'x' })).status, 404);
-    assert.equal((await b('PUT', `/ipd/service-charges/${charges[0].id}`, { name: 'x', category: 'other', price: 1 })).status, 404);
+    assert.equal((await b('PUT', `/ipd/service-charges/${charges[0].id}`, { name: 'Hijack charge', category: 'other', price: 1 })).status, 404);
 
     // Discharge summary → sign → discharge
     assert.equal((await a('PUT', `/ipd/admissions/${admId}/discharge-summary`, { finalDiagnosis: 'Viral fever', conditionAtDischarge: 'Stable', medications: [{ medicineName: 'Paracetamol' }] })).status, 200);

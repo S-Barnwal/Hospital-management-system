@@ -4,8 +4,11 @@ import { reportOrder, unpackOptions } from '../clinical/labMaster.logic.js';
 /** Parameter rows of every panel test on one order (@tid, @id = LabOrderId). */
 export const PARAMS_SQL = `SELECT v.ResultValueId AS id, v.LabOrderItemId AS itemId, v.Name AS name, v.Unit AS unit, v.RefLow AS refLow, v.RefHigh AS refHigh,
            v.RefText AS refText, v.ResultValue AS resultValue, v.Flag AS flag, v.SortOrder AS sortOrder,
-           ISNULL(v.InputType, 'numeric') AS inputType, v.Options AS options, v.Decimals AS decimals, v.IsHeading AS isHeading
+           ISNULL(v.InputType, 'numeric') AS inputType, v.Options AS options, v.Decimals AS decimals, v.IsHeading AS isHeading,
+           v.CriticalLow AS criticalLow, v.CriticalHigh AS criticalHigh, v.RangeLabel AS rangeLabel, v.CriticalAt AS criticalAt, v.CriticalAckAt AS criticalAckAt,
+           ua.FullName AS criticalAckBy
     FROM hms.LabResultValues v JOIN hms.LabOrderItems i ON i.TenantId = v.TenantId AND i.LabOrderItemId = v.LabOrderItemId
+    LEFT JOIN hms.Users ua ON ua.TenantId = v.TenantId AND ua.UserId = v.CriticalAckByUserId
     WHERE v.TenantId = @tid AND i.LabOrderId = @id ORDER BY v.LabOrderItemId, v.SortOrder, v.ResultValueId;`;
 
 /**
@@ -16,8 +19,10 @@ export const itemsSql = ({ withPrice = true } = {}) => `SELECT i.LabOrderItemId 
            i.RefHigh AS refHigh, i.RefText AS refText, ${withPrice ? 'i.Price AS price, i.EnteredAt AS enteredAt, ' : ''}i.ResultValue AS resultValue, i.Flag AS flag,
            i.PackageName AS packageName, ISNULL(i.DepartmentName, lt.Department) AS department, i.DepartmentSort AS departmentSort, lt.SampleType AS sampleType,
            i.Method AS method, i.Instrument AS instrument, i.Interpretation AS interpretation, ISNULL(i.InputType, 'numeric') AS inputType,
-           i.Options AS options, i.Decimals AS decimals
+           i.Options AS options, i.Decimals AS decimals, i.CriticalLow AS criticalLow, i.CriticalHigh AS criticalHigh, i.RangeLabel AS rangeLabel,
+           i.CriticalAt AS criticalAt, i.CriticalAckAt AS criticalAckAt, ua.FullName AS criticalAckBy
     FROM hms.LabOrderItems i LEFT JOIN hms.LabTests lt ON lt.TenantId = i.TenantId AND lt.LabTestId = i.LabTestId
+    LEFT JOIN hms.Users ua ON ua.TenantId = i.TenantId AND ua.UserId = i.CriticalAckByUserId
     WHERE i.TenantId = @tid AND i.LabOrderId = @id;`;
 
 /** Puts each panel's parameters under its order line (`parameters: []` for single-value tests), in report order. */

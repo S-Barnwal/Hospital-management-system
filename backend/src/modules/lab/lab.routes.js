@@ -15,11 +15,13 @@ import { toMinor as strictMinor, fromMinor } from '../../utils/pricing.js';
 
 const toMinor = (v) => strictMinor(Number(v || 0).toFixed(2));
 import { nextSequence, formatNumber } from '../tenants/sequences.js';
-import { labFlag, canMoveLab, allocatePackagePrice, labPaymentStatus, canMoveSample, balanceDue } from '../clinical/logic.js';
-import { panelFlag } from '../clinical/phase3.logic.js';
+import { canMoveLab, allocatePackagePrice, labPaymentStatus, canMoveSample, balanceDue } from '../clinical/logic.js';
 import { PARAMS_SQL, attachParameters, itemsSql } from './lab.shared.js';
 import labExtrasRoutes from './labExtras.routes.js';
 import labMasterRoutes from './labMaster.routes.js';
+import labRangesRoutes, { OPEN_CRITICAL_SQL } from './labRanges.routes.js';
+import { loadRanges, rangeChooser } from './labRanges.service.js';
+import { flagFor, isCritical, panelFlagWithCritical } from '../clinical/labRanges.logic.js';
 import { recordPrice, testSchema, insertLabTest, updateLabTest } from './labTests.service.js';
 import { checkResult, panelComplete } from '../clinical/labMaster.logic.js';
 import { config } from '../../config/env.js';
@@ -43,7 +45,8 @@ router.get('/tests', requirePermission('lab.read'), asyncHandler(async (req, res
                                       lt.Description AS description, lt.SampleType AS sampleType, lt.Unit AS unit, lt.RefLow AS refLow, lt.RefHigh AS refHigh,
                                       lt.RefText AS refText, lt.Price AS price, lt.IsActive AS isActive, lt.Method AS method, lt.Instrument AS instrument,
                                       lt.Interpretation AS interpretation, lt.InputType AS inputType, lt.Options AS options, lt.Decimals AS decimals,
-                                      lt.TatHours AS tatHours, lt.SortOrder AS sortOrder,
+                                      lt.TatHours AS tatHours, lt.SortOrder AS sortOrder, lt.CriticalLow AS criticalLow, lt.CriticalHigh AS criticalHigh,
+                                      (SELECT COUNT(*) FROM hms.LabReferenceRanges rr WHERE rr.TenantId = lt.TenantId AND rr.LabTestId = lt.LabTestId) AS rangeCount,
                                       (SELECT COUNT(*) FROM hms.LabTestParameters lp WHERE lp.TenantId = lt.TenantId AND lp.LabTestId = lt.LabTestId AND lp.IsActive = 1) AS parameterCount
                                FROM hms.LabTests lt LEFT JOIN hms.LabDepartments d ON d.TenantId = lt.TenantId AND d.LabDepartmentId = lt.DepartmentId
                                WHERE lt.TenantId = @tid AND (@all = 1 OR lt.IsActive = 1)
@@ -80,6 +83,9 @@ router.delete('/tests/:id', requirePermission('lab.configure'), asyncHandler(asy
     if (used.orders) throw conflict('This test has been ordered before. Mark it inactive instead.', 'IN_USE');
     if (used.packages) throw conflict('This test is part of a package. Remove it from the package first.', 'IN_USE');
     await tx.exec(`DELETE FROM hms.LabPriceHistory WHERE TenantId = @tid AND ItemType = 'test' AND ItemId = @id`, { tid: req.ctx.tenantId, id });
+    // Never ordered, so its ranges and parameters belong to no report: remove them with the test.
+    await tx.exec('DELETE FROM hms.LabReferenceRanges WHERE TenantId = @tid AND LabTestId = @id', { tid: req.ctx.tenantId, id });
+    await tx.exec('DELETE FROM hms.LabTestParameters WHERE TenantId = @tid AND LabTestId = @id', { tid: req.ctx.tenantId, id });
     const n = await tx.exec('DELETE FROM hms.LabTests WHERE TenantId = @tid AND LabTestId = @id', { tid: req.ctx.tenantId, id });
     if (!n) throw notFound('Test not found.');
     await auditTenant(req, 'lab_test.deleted', 'lab_test', id, null, tx);
@@ -343,7 +349,8 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
   const b = req.body;
   const ctx = req.ctx;
   const out = await withTransaction(async (tx) => {
-    const pat = await tx.one('SELECT PatientId FROM hms.Patients WHERE TenantId = @tid AND PatientId = @id AND IsArchived = 0', { tid: ctx.tenantId, id: b.patientId });
+    const pat = await tx.one(`SELECT PatientId, Gender, CONVERT(CHAR(10), DateOfBirth, 23) AS Dob FROM hms.Patients
+                              WHERE TenantId = @tid AND PatientId = @id AND IsArchived = 0`, { tid: ctx.tenantId, id: b.patientId });
     if (!pat) throw badRequest('Patient not found.');
     if (b.doctorId && !(await tx.one(`SELECT 1 AS ok FROM hms.StaffMembers WHERE TenantId = @tid AND StaffId = @id AND StaffType = 'doctor'`, { tid: ctx.tenantId, id: b.doctorId }))) {
       throw badRequest('Doctor not found.');
@@ -405,22 +412,40 @@ router.post('/orders', requirePermission('lab.write'), validate(orderSchema), as
       pri: b.priority, notes: b.notes ?? null, uid: ctx.userId,
       gross: t.money(fromMinor(grossMinor)), disc: t.money(fromMinor(discountMinor)), net: t.money(fromMinor(grossMinor - discountMinor)) });
 
+    // Reference ranges for this patient's age and gender (the test's default range when none matches).
+    const ranges = await loadRanges(tx, ctx.tenantId, lines.map((l) => l.test.LabTestId));
+    const choose = rangeChooser(ranges, { gender: pat.Gender, dateOfBirth: pat.Dob });
+    const paramRangeIds = new Set(ranges.filter((x) => x.parameterId != null).map((x) => `${x.testId}:${x.parameterId}`));
+
     for (const { test, priceMinor, pkg } of lines) {
       // Snapshot of everything the report prints, so later catalogue edits never change this order.
+      const rg = choose(test.LabTestId, null, test);
       const item = await tx.one(`INSERT INTO hms.LabOrderItems (TenantId, LabOrderId, LabTestId, TestName, Unit, RefLow, RefHigh, RefText, Price, LabPackageId, PackageName,
-                       DepartmentName, DepartmentSort, Method, Instrument, Interpretation, InputType, Options, Decimals)
+                       DepartmentName, DepartmentSort, Method, Instrument, Interpretation, InputType, Options, Decimals, CriticalLow, CriticalHigh, RangeLabel)
                      OUTPUT INSERTED.LabOrderItemId
-                     VALUES (@tid, @oid, @test, @name, @unit, @lo, @hi, @txt, @price, @pkg, @pkgName, @dept, @deptSort, @method, @instr, @interp, @itype, @opts, @dec)`,
-      { tid: ctx.tenantId, oid: order.LabOrderId, test: test.LabTestId, name: test.Name, unit: test.Unit, lo: test.RefLow == null ? null : t.dec(test.RefLow, 12, 4),
-        hi: test.RefHigh == null ? null : t.dec(test.RefHigh, 12, 4), txt: test.RefText, price: t.money(fromMinor(priceMinor)),
+                     VALUES (@tid, @oid, @test, @name, @unit, @lo, @hi, @txt, @price, @pkg, @pkgName, @dept, @deptSort, @method, @instr, @interp, @itype, @opts, @dec, @cl, @ch, @rl)`,
+      { tid: ctx.tenantId, oid: order.LabOrderId, test: test.LabTestId, name: test.Name, unit: test.Unit, lo: rg.lo, hi: rg.hi, txt: rg.txt, cl: rg.cl, ch: rg.ch, rl: rg.label,
+        price: t.money(fromMinor(priceMinor)),
         pkg: pkg ? pkg.LabPackageId : null, pkgName: pkg ? pkg.Name : null, dept: test.DeptName ?? test.Department ?? null, deptSort: test.DeptSort ?? null,
         method: test.Method ?? null, instr: test.Instrument ?? null, interp: test.Interpretation ?? null, itype: test.InputType ?? 'numeric',
         opts: test.Options ?? null, dec: test.Decimals ?? null });
       // Panel tests (e.g. CBC): snapshot every active parameter as well.
-      await tx.exec(`INSERT INTO hms.LabResultValues (TenantId, LabOrderItemId, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading)
-                     SELECT TenantId, @item, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading
+      await tx.exec(`INSERT INTO hms.LabResultValues (TenantId, LabOrderItemId, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading,
+                       CriticalLow, CriticalHigh)
+                     SELECT TenantId, @item, ParameterId, Name, Unit, RefLow, RefHigh, RefText, SortOrder, InputType, Options, Decimals, IsHeading, CriticalLow, CriticalHigh
                      FROM hms.LabTestParameters WHERE TenantId = @tid AND LabTestId = @test AND IsActive = 1`,
       { tid: ctx.tenantId, item: item.LabOrderItemId, test: test.LabTestId });
+      // Parameters with their own age/gender ranges get the matching one.
+      if ([...paramRangeIds].some((k) => k.startsWith(`${test.LabTestId}:`))) {
+        const params = await tx.query(`SELECT ParameterId, RefLow, RefHigh, RefText, CriticalLow, CriticalHigh FROM hms.LabTestParameters
+                                       WHERE TenantId = @tid AND LabTestId = @test AND IsActive = 1 AND IsHeading = 0`, { tid: ctx.tenantId, test: test.LabTestId });
+        for (const prm of params.filter((x) => paramRangeIds.has(`${test.LabTestId}:${x.ParameterId}`))) {
+          const pr = choose(test.LabTestId, prm.ParameterId, prm);
+          await tx.exec(`UPDATE hms.LabResultValues SET RefLow = @lo, RefHigh = @hi, RefText = @txt, CriticalLow = @cl, CriticalHigh = @ch, RangeLabel = @rl
+                         WHERE TenantId = @tid AND LabOrderItemId = @item AND ParameterId = @pid`,
+          { tid: ctx.tenantId, item: item.LabOrderItemId, pid: prm.ParameterId, lo: pr.lo, hi: pr.hi, txt: pr.txt, cl: pr.cl, ch: pr.ch, rl: pr.label });
+        }
+      }
     }
 
     if (b.homeCollection) {
@@ -516,6 +541,10 @@ router.get('/orders/:id', requirePermission('lab.read'), asyncHandler(async (req
       hospital: { name: o.HospitalName, address: o.HospitalAddress, phone: o.HospitalPhone },
       items: attachParameters(rawItems, params), samples,
       homeCollection: home[0] ?? null,
+      critical: {
+        open: [...rawItems, ...params].filter((x) => x.criticalAt && !x.criticalAckAt).length,
+        acknowledgedNote: o.CriticalAckNote ?? null,
+      },
     },
   });
 }));
@@ -550,14 +579,27 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     const status = await withTransaction(async (tx) => {
-      const o = await tx.one('SELECT Status FROM hms.LabOrders WITH (UPDLOCK) WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
+      const o = await tx.one('SELECT Status, OrderNumber FROM hms.LabOrders WITH (UPDLOCK) WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
       if (!o) throw notFound('Lab order not found.');
       if (!['sample_collected', 'completed'].includes(o.Status)) {
         throw conflict(o.Status === 'verified' ? 'Results are verified and locked.' : 'Collect the sample before entering results.', 'LAB_STATE');
       }
-      const items = await tx.query('SELECT LabOrderItemId, RefLow, RefHigh, InputType, Options FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
+      const items = await tx.query(`SELECT LabOrderItemId, TestName, RefLow, RefHigh, CriticalLow, CriticalHigh, InputType, Options, ResultValue, Flag
+                                    FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id`, { tid: req.ctx.tenantId, id });
+      const newlyCritical = [];
+      /** Critical bookkeeping: a new or changed critical value starts a new alert; a non-critical value clears it. */
+      const criticalParams = (prev, value, flag, name) => {
+        const crit = isCritical(flag);
+        const keep = crit && isCritical(prev.Flag) && prev.ResultValue === value;
+        if (crit && !keep) newlyCritical.push(name);
+        return { crit: crit ? 1 : 0, keep: keep ? 1 : 0 };
+      };
+      const CRITICAL_SET = `CriticalAt = CASE WHEN @crit = 0 THEN NULL WHEN @keep = 1 THEN CriticalAt ELSE SYSUTCDATETIME() END,
+                            CriticalAckAt = CASE WHEN @keep = 1 THEN CriticalAckAt ELSE NULL END,
+                            CriticalAckByUserId = CASE WHEN @keep = 1 THEN CriticalAckByUserId ELSE NULL END`;
       const byId = new Map(items.map((i) => [Number(i.LabOrderItemId), i]));
-      const panelRows = await tx.query(`SELECT v.ResultValueId, v.LabOrderItemId, v.RefLow, v.RefHigh, v.InputType, v.Options, v.IsHeading, v.Name FROM hms.LabResultValues v
+      const panelRows = await tx.query(`SELECT v.ResultValueId, v.LabOrderItemId, v.RefLow, v.RefHigh, v.CriticalLow, v.CriticalHigh, v.InputType, v.Options, v.IsHeading, v.Name,
+          v.ResultValue, v.Flag, i.TestName FROM hms.LabResultValues v
           JOIN hms.LabOrderItems i ON i.TenantId = v.TenantId AND i.LabOrderItemId = v.LabOrderItemId WHERE v.TenantId = @tid AND i.LabOrderId = @id`,
       { tid: req.ctx.tenantId, id });
       const panelItems = new Set(panelRows.map((r) => Number(r.LabOrderItemId)));
@@ -569,9 +611,11 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
         const checked = checkResult({ inputType: row.InputType, options: row.Options, isHeading: row.IsHeading }, r.value);
         if (checked.error) throw badRequest(`${row.Name}: ${checked.error}`);
         const { value, numeric } = checked;
-        await tx.exec(`UPDATE hms.LabResultValues SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
+        const f = flagFor(numeric, { refLow: row.RefLow, refHigh: row.RefHigh, criticalLow: row.CriticalLow, criticalHigh: row.CriticalHigh });
+        await tx.exec(`UPDATE hms.LabResultValues SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME(), ${CRITICAL_SET}
                        WHERE TenantId = @tid AND ResultValueId = @rid`,
-        { tid: req.ctx.tenantId, rid: r.id, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f: labFlag(numeric, row.RefLow, row.RefHigh), uid: req.ctx.userId });
+        { tid: req.ctx.tenantId, rid: r.id, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f, uid: req.ctx.userId,
+          ...criticalParams(row, value, f, `${row.TestName} — ${row.Name}`) });
         touchedPanels.add(Number(row.LabOrderItemId));
       }
       // A panel line is "done" when every parameter has a value; its flag summarises the parameters.
@@ -581,7 +625,7 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
         const valueRows = ps.filter((x) => !x.IsHeading);
         await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = NULL, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
                        WHERE TenantId = @tid AND LabOrderId = @id AND LabOrderItemId = @item`,
-        { tid: req.ctx.tenantId, id, item: itemId, v: done ? `${valueRows.length} parameters` : null, f: done ? panelFlag(valueRows.map((x) => x.Flag)) : null, uid: req.ctx.userId });
+        { tid: req.ctx.tenantId, id, item: itemId, v: done ? `${valueRows.length} parameters` : null, f: done ? panelFlagWithCritical(valueRows.map((x) => x.Flag)) : null, uid: req.ctx.userId });
       }
       for (const r of req.body.results) {
         const item = byId.get(r.itemId);
@@ -590,14 +634,23 @@ router.put('/orders/:id/results', requirePermission('lab.write'),
         const checked = checkResult({ inputType: item.InputType, options: item.Options }, r.value);
         if (checked.error) throw badRequest(checked.error);
         const { value, numeric } = checked;
-        await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME()
+        const f = flagFor(numeric, { refLow: item.RefLow, refHigh: item.RefHigh, criticalLow: item.CriticalLow, criticalHigh: item.CriticalHigh });
+        await tx.exec(`UPDATE hms.LabOrderItems SET ResultValue = @v, ResultNumeric = @n, Flag = @f, EnteredByUserId = @uid, EnteredAt = SYSUTCDATETIME(), ${CRITICAL_SET}
                        WHERE TenantId = @tid AND LabOrderId = @id AND LabOrderItemId = @item`,
-        { tid: req.ctx.tenantId, id, item: r.itemId, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f: labFlag(numeric, item.RefLow, item.RefHigh), uid: req.ctx.userId });
+        { tid: req.ctx.tenantId, id, item: r.itemId, v: value, n: numeric === null ? null : t.dec(numeric, 12, 4), f, uid: req.ctx.userId,
+          ...criticalParams(item, value, f, item.TestName) });
       }
       const pending = await tx.one('SELECT COUNT(*) AS n FROM hms.LabOrderItems WHERE TenantId = @tid AND LabOrderId = @id AND ResultValue IS NULL', { tid: req.ctx.tenantId, id });
       const next = pending.n === 0 ? 'completed' : 'sample_collected';
       await tx.exec(`UPDATE hms.LabOrders SET Status = @s, CompletedAt = CASE WHEN @s = 'completed' THEN SYSUTCDATETIME() ELSE NULL END WHERE TenantId = @tid AND LabOrderId = @id`,
         { tid: req.ctx.tenantId, id, s: next });
+      if (newlyCritical.length) {
+        // Alert everyone in this hospital (no patient name in the notification; staff open the order to see it).
+        await tx.exec(`INSERT INTO hms.Notifications (TenantId, UserId, Type, Title, Body) VALUES (@tid, NULL, 'lab_critical', @title, @body)`,
+          { tid: req.ctx.tenantId, title: `Critical lab result — ${o.OrderNumber}`.slice(0, 200),
+            body: `${newlyCritical.join(', ')}. Inform the doctor and acknowledge on the order before verifying.`.slice(0, 1000) });
+        await auditTenant(req, 'lab_order.critical_result', 'lab_order', id, { results: newlyCritical }, tx);
+      }
       await auditTenant(req, 'lab_order.results_entered', 'lab_order', id, { count: req.body.results.length + req.body.parameters.length }, tx);
       return next;
     });
@@ -610,6 +663,9 @@ router.post('/orders/:id/verify', requirePermission('lab.verify'), asyncHandler(
     const o = await tx.one('SELECT Status FROM hms.LabOrders WITH (UPDLOCK) WHERE TenantId = @tid AND LabOrderId = @id', { tid: req.ctx.tenantId, id });
     if (!o) throw notFound('Lab order not found.');
     if (!canMoveLab(o.Status, 'verified')) throw conflict('Only completed orders (all results entered) can be verified.', 'LAB_STATE');
+    if ((await tx.one(OPEN_CRITICAL_SQL, { tid: req.ctx.tenantId, id })).n > 0) {
+      throw conflict('This order has a critical result. Inform the doctor and acknowledge it before verifying.', 'CRITICAL_UNACKNOWLEDGED');
+    }
     await tx.exec(`UPDATE hms.LabOrders SET Status = 'verified', VerifiedAt = SYSUTCDATETIME(), VerifiedByUserId = @uid WHERE TenantId = @tid AND LabOrderId = @id`,
       { tid: req.ctx.tenantId, id, uid: req.ctx.userId });
     await auditTenant(req, 'lab_order.verified', 'lab_order', id, null, tx);
@@ -738,5 +794,6 @@ router.post('/samples/:id/:action', requirePermission('lab.write'),
 // Phase 3: test parameters, patient trends, home collection.
 router.use(labExtrasRoutes);
 router.use(labMasterRoutes);
+router.use(labRangesRoutes);
 
 export default router;
