@@ -51,7 +51,8 @@ router.put('/tests/:id/parameters', requirePermission('lab.configure'),
           : { ...p, options: p.inputType === 'option' ? options : null };
       }))
       .max(60),
-  }).strict().refine((v) => new Set(v.parameters.map((p) => p.name.toLowerCase())).size === v.parameters.length, 'Each parameter needs a different name.')),
+  }).strict().refine((v) => v.parameters.some((p) => !p?.name) // a row already failed its own checks: report that error, not this one
+    || new Set(v.parameters.map((p) => p.name.toLowerCase())).size === v.parameters.length, 'Each parameter needs a different name.')),
   asyncHandler(async (req, res) => {
     const id = idParam(req.params.id);
     await withTransaction(async (tx) => {
