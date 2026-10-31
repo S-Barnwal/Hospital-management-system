@@ -4,7 +4,7 @@
 |---|---|---|---|
 | 1 — Audit & comparison | ✅ Done (analysis only, no code changed) | 31 Oct 2026 | `MEDICORE_PROJECT_AUDIT.md`, `LABSMART_FEATURE_ANALYSIS.md`, `MEDICORE_VS_LABSMART_COMPARISON.md`, `MISSING_FEATURES.md`, `DATABASE_GAP_ANALYSIS.md`, `DEVELOPMENT_ROADMAP.md` |
 | 2 — Lab master data | ✅ Done — tested on the development database | 31 Oct 2026 | Migration 015; departments CRUD; test method/instrument/interpretation/TAT/order; result input types (number/text/dropdown), decimals, heading rows; CSV import (dry run, all-or-nothing, ≤ 500 rows); order snapshots; report grouped by department |
-| 3 — Age/gender ranges & critical values | ✅ Built — waiting for your test run & approval | 1 Nov 2026 | Migration 016; ranges editor + CSV import; range chosen per patient at order time and snapshotted; critical flags, alert, acknowledgement, verify blocked until acknowledged |
+| 3 — Age/gender ranges & critical values | ✅ Done — 5/5 integration tests pass on the development database | 1 Nov 2026 | Migration 016; ranges editor + CSV import; range chosen per patient at order time and snapshotted; critical flags, alert, acknowledgement, verify blocked until acknowledged |
 | 4 — Formula engine | Planned | | |
 | 5 — Approval workflow & signatures | Planned | | |
 
@@ -38,7 +38,7 @@
 - The patient report link strips the staff-only alert fields.
 - No ranges or critical limits are hard-coded; the lab enters or imports its own.
 
-**Verification done here:** unit tests `labRanges.test.js` (age, newborn / infant / child / adult female / adult male / unknown gender / no DOB, flags, overlaps); frontend build; UI walkthrough (ranges editor with overlap error, ranges CSV import, critical banner, verify disabled, critical list, acknowledge) on desktop and phone; chunk 2 walkthrough re-run. Integration test `tests/integration/chunk3-lab-ranges.test.js` needs your database.
+**Verification done here:** unit tests `labRanges.test.js` (age, newborn / infant / child / adult female / adult male / unknown gender / no DOB, flags, overlaps); frontend build; UI walkthrough (ranges editor with overlap error, ranges CSV import, critical banner, verify disabled, critical list, acknowledge) on desktop and phone; chunk 2 walkthrough re-run. Integration test `tests/integration/chunk3-lab-ranges.test.js`: 5/5 pass on the development database (1 Nov 2026).
 
 **To run on your laptop (backend folder):** `npm run db:migrate` → `npm test` → `npm run test:e2e -- chunk3-lab-ranges chunk2-lab-master phase3 > c3.log 2>&1`.
 

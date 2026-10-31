@@ -140,10 +140,10 @@ describe('Chunk 3: reference ranges and critical values', () => {
     assert.equal(o.critical.open, 1);
     assert.ok(ok(await a('GET', '/lab/critical')).some((x) => Number(x.orderId) === order.id));
     assert.ok(!ok(await b('GET', '/lab/critical')).some((x) => Number(x.orderId) === order.id), 'B never sees A’s critical results');
-    const notes = ok(await a('GET', '/tenant/notifications'));
+    const notes = ok(await a('GET', '/notifications'));
     assert.ok(notes.some((x) => /Critical lab result/.test(x.Title ?? x.title)), 'staff alerted');
     assert.ok(!JSON.stringify(notes).includes('Woman'), 'no patient name in the alert');
-    assert.ok(!ok(await b('GET', '/tenant/notifications')).some((x) => (x.Title ?? x.title ?? '').includes(o.number)));
+    assert.ok(!ok(await b('GET', '/notifications')).some((x) => (x.Title ?? x.title ?? '').includes(o.number)));
 
     const blocked = await a('POST', `/lab/orders/${order.id}/verify`);
     assert.equal(blocked.status, 409);
